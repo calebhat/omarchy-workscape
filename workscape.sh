@@ -805,6 +805,12 @@ launch_profile_assignments() {
   local launch_mons="{}"
   launch_mons=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --bindings 2>/dev/null || echo "{}")
 
+  # set -u: leftover boot_log appends from an earlier I/O harden that
+  # dropped the assignment. Apply matching dies on the first launch without this.
+  local boot_log="$STATE_DIR/launch-$boot_id.log"
+  : > "$boot_log" 2>/dev/null || true
+  echo "$(date -u) boot_id=$boot_id profile=$profile_id force=$force" >> "$boot_log" 2>/dev/null || true
+
   local idx=0 item
   while IFS= read -r item; do
     [[ -n $item ]] || continue
