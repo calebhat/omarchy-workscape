@@ -1305,6 +1305,49 @@ function collapseGroupTiles(list) {
     return { tiles: tiles, owner: owner }
 }
 
+// Per-window view of the same collapse, for the preview: it draws one pane per
+// tile, so every member after the first is hidden and the first carries a tab
+// strip naming the whole group. Entries line up with `list` index for index;
+// an ungrouped window gets null and is drawn the ordinary way.
+function groupPreviewTiles(list) {
+    var src = list || []
+    var counts = {}
+    for (var i = 0; i < src.length; i++) {
+        var t = groupTokenOf(src[i])
+        if (t) counts[t] = (counts[t] || 0) + 1
+    }
+    var out = []
+    var reps = {}
+    for (var j = 0; j < src.length; j++) {
+        var token = groupTokenOf(src[j])
+        // A lone member is not a group: it occupies its tile by itself and a
+        // one-tab strip would be noise.
+        if (!token || counts[token] < 2) { out.push(null); continue }
+        if (reps[token] === undefined) {
+            reps[token] = j
+            var tabs = []
+            var active = null
+            for (var k = 0; k < src.length; k++) {
+                if (groupTokenOf(src[k]) !== token) continue
+                var isActive = src[k].groupActive === true
+                if (isActive && !active) active = src[k]
+                tabs.push({ id: String(src[k].id || ""), name: String(src[k].name || "App"), exec: String(src[k].exec || src[k].command || ""), active: isActive })
+            }
+            out.push({ rep: true, tabs: tabs, active: active })
+        } else {
+            out.push({ rep: false, tabs: [], active: null })
+        }
+    }
+    return out
+}
+
+// A floating window sits above the tiles, so it never joins a tile group.
+function groupTokenOf(a) {
+    if (!a || !a.group) return ""
+    if (assignmentPlace(a) === "float") return ""
+    return String(a.group)
+}
+
 function chipGeomsForWorkspace(profile, workspace) {
     var ws = parseInt(workspace, 10)
     var list = []
@@ -1911,6 +1954,15 @@ function normalizeAssignment(a) {
     if (title) out.title = title.slice(0, 120)
     var cls = String(a.class || a.windowClass || "").trim()
     if (cls) out.class = cls.slice(0, 80)
+    // Hyprland window group this assignment belongs to. Members of one group
+    // share a token and occupy a single tile; order inside the group is the
+    // order of the assignments themselves. groupActive marks the tab that was
+    // on top when the workspace was captured. Mirrors scripts/schema.
+    var group = String(a.group || "").trim()
+    if (group) {
+        out.group = group.slice(0, 40)
+        if (a.groupActive === true) out.groupActive = true
+    }
     var geom = a.place === "float" ? normalizeFloatGeom(a.geom) : normalizeGeom(a.geom)
     if (geom) out.geom = geom
     var chrome = normalizeChrome(a.chrome)

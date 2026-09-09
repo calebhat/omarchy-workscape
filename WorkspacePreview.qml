@@ -28,6 +28,10 @@ Item {
     readonly property real screenAspect: screenW > 0 && screenH > 0 ? screenH / screenW : 0.5625
     readonly property var appLibrary: root.bar && root.bar.shell ? root.bar.shell.appLibrary : null
     readonly property bool customLayout: Model.workspaceUsesCustomLayout(assignedApps)
+    // One entry per assignment: null when ungrouped, {rep, tabs, active}
+    // otherwise. A group is one tile, so only the representative is drawn and it
+    // carries the tab strip.
+    readonly property var groupPreview: Model.groupPreviewTiles(assignedApps)
     readonly property string layoutLabel: {
         if (customLayout) return "tiled · drag the splitters"
         if (hyprLayout === "scrolling") return "scrolling • " + Math.round(columnWidth * 100) + "% columns"
@@ -183,6 +187,12 @@ Item {
                         required property var modelData
                         required property int index
                         readonly property var geom: (root.liveGeoms && root.liveGeoms[index]) ? root.liveGeoms[index] : { x: 0, y: 0, w: 1, h: 1 }
+                        readonly property var groupInfo: (root.groupPreview && root.groupPreview[index]) ? root.groupPreview[index] : null
+                        // Members of a group share one tile; the first one draws it.
+                        visible: !groupInfo || groupInfo.rep
+                        // The pane shows whichever tab was on top at capture time.
+                        readonly property var faceApp: (groupInfo && groupInfo.active) ? groupInfo.active : modelData
+                        readonly property int tabStripH: (groupInfo && groupInfo.rep) ? 13 : 0
                         x: geom.x * tilesContainer.width + 3
                         y: geom.y * tilesContainer.height + 3
                         width: Math.max(24, geom.w * tilesContainer.width - 6)
@@ -198,11 +208,11 @@ Item {
                         Image {
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.bottom: parent.verticalCenter
-                            anchors.bottomMargin: 2
+                            anchors.bottomMargin: 2 + parent.tabStripH / 2
                             width: 16
                             height: 16
                             visible: source !== ""
-                            source: root.iconSourceFor(modelData ? (modelData.exec || modelData.command) : "")
+                            source: root.iconSourceFor(parent.faceApp ? (parent.faceApp.exec || parent.faceApp.command) : "")
                             fillMode: Image.PreserveAspectFit
                             asynchronous: true
                             cache: true
@@ -211,16 +221,61 @@ Item {
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.top: parent.verticalCenter
-                            anchors.topMargin: 4
+                            anchors.topMargin: 4 + parent.tabStripH / 2
                             width: parent.width - 12
                             textFormat: Text.PlainText
-                            text: ((root.lockAll || (modelData && modelData.lockPlace)) ? "🔒 " : "") + (modelData ? (modelData.name || "App") : "")
+                            text: ((root.lockAll || (modelData && modelData.lockPlace)) ? "🔒 " : "") + (parent.faceApp ? (parent.faceApp.name || "App") : "")
                             color: Color.foreground
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption - 1
                             font.bold: true
                             wrapMode: Text.WordWrap
                             horizontalAlignment: Text.AlignHCenter
+                        }
+                        // Groupbar stand-in: one chip per member, in capture order,
+                        // with the tab that was on top picked out. Inset so the lock
+                        // and close hit areas in the corners stay reachable.
+                        Row {
+                            id: tabStrip
+                            // Repeater counts as a child of this Row, so widths come
+                            // from the tab list itself rather than children.length.
+                            readonly property var tabs: (parent.groupInfo && parent.groupInfo.tabs) ? parent.groupInfo.tabs : []
+                            readonly property real chipW: Math.max(0, (width - (tabs.length - 1) * 2) / Math.max(1, tabs.length))
+                            visible: parent.tabStripH > 0 && tabs.length > 0
+                            z: 3
+                            anchors.top: parent.top
+                            anchors.topMargin: 2
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            // Inset so the lock and close hit areas in the corners stay reachable.
+                            width: Math.max(0, parent.width - 40)
+                            height: 11
+                            spacing: 2
+                            Repeater {
+                                model: tabStrip.tabs
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    width: tabStrip.chipW
+                                    height: tabStrip.height
+                                    radius: 3
+                                    color: modelData.active
+                                           ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.55)
+                                           : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.14)
+                                    Text {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 3
+                                        anchors.rightMargin: 3
+                                        textFormat: Text.PlainText
+                                        text: modelData.name
+                                        color: Color.foreground
+                                        font.family: Style.font.family
+                                        font.pixelSize: Style.font.caption - 3
+                                        font.bold: modelData.active
+                                        elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                            }
                         }
                         MouseArea {
                             z: 4
