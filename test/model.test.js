@@ -540,6 +540,54 @@ if (gpFloat[1] !== null) throw new Error("lone remaining member is not a group")
 const gpLone = m.groupPreviewTiles([{ id: "a", name: "A", exec: "a", group: "g" }])
 if (gpLone[0] !== null) throw new Error("single-member group is not a group")
 
+// Members of a group share one tile, so their geoms are identical by design.
+// Packing must read that as one tile rather than as an overlap, or the saved
+// layout is thrown away and replaced with an auto layout for one pane too many
+// — which also gets written back to disk the next time the panel opens.
+const gGrp = [
+  { id: "a", name: "WhatsApp", exec: "wa", group: "g2", geom: { x: 0, y: 0, w: 0.6, h: 1 } },
+  { id: "b", name: "Telegram", exec: "tg", group: "g2", groupActive: true, geom: { x: 0, y: 0, w: 0.6, h: 1 } },
+  { id: "c", name: "Spotify", exec: "sp", geom: { x: 0.6, y: 0, w: 0.4, h: 1 } }
+]
+const packedGrp = m.packedGeomsForApps(gGrp, "dwindle", 0.49)
+if (packedGrp.length !== 3) throw new Error("one geom per assignment")
+if (packedGrp[0].w !== 0.6 || packedGrp[0].h !== 1) throw new Error("group tile keeps its saved geom")
+if (packedGrp[1].x !== packedGrp[0].x || packedGrp[1].y !== packedGrp[0].y
+    || packedGrp[1].w !== packedGrp[0].w || packedGrp[1].h !== packedGrp[0].h)
+  throw new Error("group members share one tile")
+if (packedGrp[2].x !== 0.6 || packedGrp[2].w !== 0.4 || packedGrp[2].h !== 1)
+  throw new Error("the ungrouped window keeps the rest of the row")
+// A real overlap between separate tiles must still fall back to the auto layout.
+const gOverlap = m.packedGeomsForApps([
+  { id: "a", exec: "a", geom: { x: 0, y: 0, w: 0.8, h: 1 } },
+  { id: "b", exec: "b", geom: { x: 0.4, y: 0, w: 0.6, h: 1 } }
+], "dwindle", 0.49)
+if (gOverlap[0].w === 0.8) throw new Error("genuine overlap still falls back to auto layout")
+// Two windows in a group and nothing else fill the workspace as one tile.
+const gOnly = m.packedGeomsForApps([
+  { id: "a", exec: "a", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "b", exec: "b", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } }
+], "dwindle", 0.49)
+if (gOnly[0].w !== 1 || gOnly[1].w !== 1) throw new Error("a lone group tile fills the workspace")
+
+// Removing a window next to a group: the group is one tile, so it takes the
+// freed space as a whole and its members stay on identical geoms.
+const rmBase = [
+  { id: "a", workspace: 1, exec: "a", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "b", workspace: 1, exec: "b", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "c", workspace: 1, exec: "c", geom: { x: 0.5, y: 0, w: 0.5, h: 1 } }
+]
+const rmC = m.removeAppAndFill(rmBase, "c")
+if (rmC.length !== 2) throw new Error("removing a window drops exactly one entry")
+if (rmC[0].geom.w !== 1 || rmC[1].geom.w !== 1) throw new Error("the group tile absorbs the freed space")
+if (rmC[0].geom.x !== rmC[1].geom.x || rmC[0].geom.w !== rmC[1].geom.w)
+  throw new Error("group members still share one tile after a removal")
+// Removing one tab leaves the tile occupied by the others, so nothing moves.
+const rmB = m.removeAppAndFill(rmBase, "b")
+if (rmB.length !== 2) throw new Error("removing a tab drops exactly one entry")
+if (rmB[0].geom.w !== 0.5 || rmB[1].geom.x !== 0.5)
+  throw new Error("removing one tab of a group leaves the layout alone")
+
 const isoCfg = m.sanitizeConfig({
   version: 2,
   profiles: [{

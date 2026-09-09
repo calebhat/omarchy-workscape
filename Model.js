@@ -1591,9 +1591,19 @@ function packedGeomsForApps(apps, layout, columnWidth) {
     var packLayout = layout === "scrolling" ? "dwindle" : (layout || "dwindle")
     var tileList = []
     var tilePos = []
+    // Which tile each entry draws in. Members of a group share a tile, so they
+    // also share its geometry — their identical geoms are the group, not an
+    // overlap, and packing them as separate panes would lay out one pane too
+    // many and throw the saved layout away.
+    var tileOf = []
+    var groupSeen = {}
     var i
     for (i = 0; i < n; i++) {
-        if (assignmentPlace(list[i]) === "float") continue
+        if (assignmentPlace(list[i]) === "float") { tileOf.push(-1); continue }
+        var gtok = groupTokenOf(list[i])
+        if (gtok && groupSeen[gtok] !== undefined) { tileOf.push(groupSeen[gtok]); continue }
+        if (gtok) groupSeen[gtok] = tileList.length
+        tileOf.push(tileList.length)
         tilePos.push(i)
         tileList.push(list[i])
     }
@@ -1619,14 +1629,12 @@ function packedGeomsForApps(apps, layout, columnWidth) {
     }
     var use = (!anyCustom || layoutHasOverlap(tileGeoms)) ? autos : tileGeoms
     var out = []
-    t = 0
     for (i = 0; i < n; i++) {
         var item
-        if (assignmentPlace(list[i]) === "float") {
+        if (tileOf[i] < 0) {
             item = normalizeFloatGeom(list[i] && list[i].geom) || normalizeFloatGeom({ x: 0.12, y: 0.12, w: 0.4, h: 0.4 })
         } else {
-            item = clone(use[t] || { x: 0, y: 0, w: 1, h: 1 })
-            t++
+            item = clone(use[tileOf[i]] || { x: 0, y: 0, w: 1, h: 1 })
         }
         if (list[i] && list[i].id) item.id = list[i].id
         out.push(item)
@@ -1850,22 +1858,40 @@ function removeAppAndFill(apps, id) {
     var gone = list[idx]
     var ws = gone.workspace
     var hole = assignmentPlace(gone) === "float" ? null : normalizeGeom(gone.geom)
+    var goneToken = groupTokenOf(gone)
     list.splice(idx, 1)
     if (!hole) return list
+    // Closing one tab of a group leaves the tile occupied by the remaining
+    // members, so there is no hole and the layout must be left alone.
+    if (goneToken) {
+        for (i = 0; i < list.length; i++) {
+            if (String(list[i].workspace) !== String(ws)) continue
+            if (groupTokenOf(list[i]) === goneToken) return list
+        }
+    }
+    // Indices are grouped per tile: a group's members share one entry, take one
+    // geometry between them, and are written back together.
     var tileIdx = []
     var tileGeoms = []
     var missing = false
+    var tileSeen = {}
     for (i = 0; i < list.length; i++) {
         if (String(list[i].workspace) !== String(ws)) continue
         if (assignmentPlace(list[i]) === "float") continue
         var g = normalizeGeom(list[i].geom)
         if (!g) missing = true
-        tileIdx.push(i)
+        var tok = groupTokenOf(list[i])
+        if (tok && tileSeen[tok] !== undefined) { tileIdx[tileSeen[tok]].push(i); continue }
+        if (tok) tileSeen[tok] = tileIdx.length
+        tileIdx.push([i])
         tileGeoms.push(g || { x: 0, y: 0, w: 1, h: 1 })
+    }
+    function setTileGeom(t, geom) {
+        for (var k = 0; k < tileIdx[t].length; k++) list[tileIdx[t][k]].geom = clone(geom)
     }
     if (!tileIdx.length) return list
     if (tileIdx.length === 1) {
-        list[tileIdx[0]].geom = { x: 0, y: 0, w: 1, h: 1 }
+        setTileGeom(0, { x: 0, y: 0, w: 1, h: 1 })
         return list
     }
     if (missing) return list
@@ -1877,11 +1903,11 @@ function removeAppAndFill(apps, id) {
     if (after + 0.04 < before || layoutHasOverlap(filled)) {
         var autos = autoLayoutRects(tileIdx.length, "dwindle", 0.49)
         for (i = 0; i < tileIdx.length; i++) {
-            if (autos[i]) list[tileIdx[i]].geom = autos[i]
+            if (autos[i]) setTileGeom(i, autos[i])
         }
         return list
     }
-    for (i = 0; i < tileIdx.length; i++) list[tileIdx[i]].geom = filled[i]
+    for (i = 0; i < tileIdx.length; i++) setTileGeom(i, filled[i])
     return list
 }
 
