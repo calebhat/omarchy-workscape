@@ -1589,6 +1589,93 @@ def test_match_outlook_prefers_full_pane():
     assert hit and hit["address"] == "0xmain", hit
 
 
+def test_lock_plan_collapses_group_to_one_tile():
+    """A group is one tile, so only its first member stands in for it."""
+    profile = {
+        "assignments": [
+            {"workspace": 3, "name": "Telegram", "exec": "telegram", "lockPlace": True,
+             "group": "g1", "geom": {"x": 0, "y": 0, "w": 0.5, "h": 1}},
+            {"workspace": 3, "name": "Signal", "exec": "signal", "lockPlace": True,
+             "group": "g1", "groupActive": True, "geom": {"x": 0, "y": 0, "w": 0.5, "h": 1}},
+            {"workspace": 3, "name": "Spotify", "exec": "spotify", "lockPlace": True,
+             "geom": {"x": 0.5, "y": 0, "w": 0.5, "h": 1}},
+        ],
+        "workspacePrefs": {"3": {"layout": "dwindle", "extras": "block"}},
+    }
+    plan = geom.lock_plan_for_workspace(profile, "3")
+    assert [a["name"] for a in plan["locked"]] == ["Telegram", "Spotify"], \
+        "the second group member must not claim a tile of its own"
+
+
+def test_group_plan_orders_members_and_drops_singletons():
+    profile = {
+        "assignments": [
+            {"workspace": 3, "name": "Telegram", "exec": "telegram", "group": "g1"},
+            {"workspace": 3, "name": "Alone", "exec": "alone", "group": "g2"},
+            {"workspace": 3, "name": "Signal", "exec": "signal", "group": "g1"},
+            {"workspace": 3, "name": "Off", "exec": "off", "group": "g1", "enabled": False},
+            {"workspace": 4, "name": "Elsewhere", "exec": "elsewhere", "group": "g1"},
+            {"workspace": 3, "name": "Plain", "exec": "plain"},
+        ],
+    }
+    plan = geom.group_plan_for_workspace(profile, "3")
+    assert len(plan) == 1, "a one-member group is an ordinary tile"
+    assert [a["name"] for a in plan[0]] == ["Telegram", "Signal"]
+
+
+def test_tile_px_shrinks_only_for_group_members():
+    """A grouped window's box excludes its groupbar, so the target must too."""
+    metrics = {"x": 0, "y": 0, "w": 1000, "h": 1000}
+    want = {"x": 0, "y": 0, "w": 1, "h": 0.5}
+    orig_clients, orig_bar = geom.hypr_j, geom.groupbar_px
+    geom.groupbar_px = lambda: 28
+    geom.hypr_j = lambda cmd, cached=False: (
+        [{"address": "0xAAA", "grouped": ["0xAAA", "0xBBB"]},
+         {"address": "0xCCC", "grouped": []}] if cmd == "clients" else {}
+    )
+    try:
+        grouped = geom.tile_px("0xAAA", want, metrics)
+        plain = geom.tile_px("0xCCC", want, metrics)
+    finally:
+        geom.hypr_j, geom.groupbar_px = orig_clients, orig_bar
+    assert plain["h"] - grouped["h"] == 28, "group member gives up the groupbar"
+    assert grouped["y"] - plain["y"] == 28
+    assert grouped["w"] == plain["w"]
+
+
+def test_add_window_to_group_uses_object_api_not_dispatcher():
+    """hl.dsp.group.move_window() is a silent no-op; Group:add() is the route."""
+    calls = []
+    orig_eval, orig_clients = geom.hypr_eval, geom.hypr_j
+    geom.hypr_eval = lambda lua: calls.append(lua)
+    geom.hypr_j = lambda cmd, cached=False: (
+        [{"address": "0xAAA", "grouped": ["0xAAA", "0xBBB"]}] if cmd == "clients" else []
+    )
+    try:
+        ok = geom.add_window_to_group("3", "0xAAA", "0xBBB")
+    finally:
+        geom.hypr_eval, geom.hypr_j = orig_eval, orig_clients
+    assert ok is True
+    lua = "\n".join(calls)
+    assert "get_groups()" in lua and ":add(w)" in lua
+    assert 'hl.get_window("address:0xBBB")' in lua
+    assert 'hl.get_workspace("3")' in lua
+    assert "move_window" not in lua
+
+
+def test_add_window_to_group_rejects_unsafe_input():
+    calls = []
+    orig_eval = geom.hypr_eval
+    geom.hypr_eval = lambda lua: calls.append(lua)
+    try:
+        assert geom.add_window_to_group("3", "0xAAA", "0xAAA") is False
+        assert geom.add_window_to_group("3", "0xAAA", 'x"); os.execute("rm -rf /') is False
+        assert geom.add_window_to_group("not a ws", "0xAAA", "0xBBB") is False
+    finally:
+        geom.hypr_eval = orig_eval
+    assert calls == [], "nothing may reach hyprctl eval for rejected input"
+
+
 if __name__ == "__main__":
     test_layout_metrics_scale()
     test_geom_pixels()
@@ -1610,6 +1697,11 @@ if __name__ == "__main__":
     test_match_app_id_when_title_is_shell_prompt()
     test_match_herdr_not_shophawk()
     test_match_outlook_prefers_full_pane()
+    test_lock_plan_collapses_group_to_one_tile()
+    test_group_plan_orders_members_and_drops_singletons()
+    test_tile_px_shrinks_only_for_group_members()
+    test_add_window_to_group_uses_object_api_not_dispatcher()
+    test_add_window_to_group_rejects_unsafe_input()
     test_set_size_lock_is_noop()
     test_clear_size_lock_is_noop()
     test_force_tiled_uses_off_not_toggle()

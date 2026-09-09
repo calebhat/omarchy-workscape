@@ -164,12 +164,16 @@ def exec_for_client(c: dict, url: str, cwd: str) -> str:
     return first or cls
 
 
-def geom_from_client(c: dict, mon: dict) -> dict | None:
+def geom_from_client(c: dict, mon: dict, grow_top: int = 0) -> dict | None:
     if not mon:
         return None
     at = c.get("at") or [0, 0]
     size = c.get("size") or [0, 0]
     box = {"x": int(at[0]), "y": int(at[1]), "w": int(size[0]), "h": int(size[1])}
+    if grow_top:
+        # A grouped window sits below its groupbar; the tile starts higher up.
+        box["y"] -= grow_top
+        box["h"] += grow_top
     if box["w"] <= 0 or box["h"] <= 0:
         return None
     metrics = GEOM.layout_metrics(mon)
@@ -214,9 +218,129 @@ def tessellate_tile_geoms(items: list[dict]) -> None:
             it["geom"] = {"x": 0.0, "y": splits[i], "w": 1.0, "h": round(splits[i + 1] - splits[i], 4)}
 
 
+# Single source of truth in scripts/geom: apply needs the same number to
+# shrink a grouped window's target box by the groupbar.
+groupbar_px = GEOM.groupbar_px
+
+
+def group_tokens(clients: list[dict]) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Map window address -> group token for every group with two or more members.
+
+    Hyprland reports the whole membership on each member as `grouped`, in tab
+    order, so one pass over the clients is enough. A lone window that happens
+    to be a one-member group is left ungrouped: persisting it would round-trip
+    a groupbar with nothing to switch between.
+    """
+    by_addr: dict[str, str] = {}
+    members: dict[str, list[str]] = {}
+    seen: set[frozenset] = set()
+    n = 0
+    for c in clients:
+        grouped = [str(a) for a in (c.get("grouped") or []) if a]
+        if len(grouped) < 2:
+            continue
+        key = frozenset(grouped)
+        if key in seen:
+            continue
+        seen.add(key)
+        n += 1
+        token = f"g{n}"
+        members[token] = grouped
+        for a in grouped:
+            by_addr[a] = token
+    return by_addr, members
+
+
+def active_group_member(clients: list[dict], addrs: list[str]) -> str:
+    """The tab on top: the group member focused most recently.
+
+    Hyprland shows the most recently focused member of a group, and
+    focusHistoryID counts up from 0 = most recent. `hidden` is not usable here
+    — every member of a group reports hidden=false.
+    """
+    best, best_id = "", None
+    for c in clients:
+        a = str(c.get("address") or "")
+        if a not in addrs:
+            continue
+        try:
+            fid = int(c.get("focusHistoryID"))
+        except (TypeError, ValueError):
+            continue
+        if best_id is None or fid < best_id:
+            best, best_id = a, fid
+    return best
+
+
+def order_group_members(items: list[dict], members: dict[str, list[str]]) -> list[dict]:
+    """Keep each group's windows adjacent and in Hyprland's tab order.
+
+    Apply rebuilds a group by adding members one after another, so the stored
+    order is what comes back. The group as a whole keeps the position its tile
+    had in the sort above.
+    """
+    if not members:
+        return items
+    rank = {token: {a: i for i, a in enumerate(addrs)} for token, addrs in members.items()}
+    out: list[dict] = []
+    emitted: set[str] = set()
+    for it in items:
+        token = it.get("group")
+        if not token:
+            out.append(it)
+            continue
+        if token in emitted:
+            continue
+        emitted.add(token)
+        siblings = [x for x in items if x.get("group") == token]
+        siblings.sort(key=lambda x: rank.get(token, {}).get(str(x.get("_addr") or ""), 99))
+        out.extend(siblings)
+    return out
+
+
+def collapse_group_tiles(items: list[dict]) -> list[dict]:
+    """One proxy per tile: members of a group share the tile they live in.
+
+    Returns proxies carrying the shared geom; write the tessellated result back
+    with fan_out_group_tiles().
+    """
+    proxies: list[dict] = []
+    by_token: dict[str, dict] = {}
+    for it in items:
+        token = it.get("group")
+        if it.get("place") == "float" or not token:
+            proxies.append({"place": it.get("place"), "geom": it.get("geom"), "members": [it]})
+            continue
+        head = by_token.get(token)
+        if head is None:
+            head = {"place": "tile", "geom": it.get("geom"), "members": [it]}
+            by_token[token] = head
+            proxies.append(head)
+        else:
+            head["members"].append(it)
+    return proxies
+
+
+def fan_out_group_tiles(proxies: list[dict]) -> None:
+    """Copy each tile's geom onto every window sharing that tile."""
+    for p in proxies:
+        geom = p.get("geom")
+        for it in p.get("members") or []:
+            if geom:
+                it["geom"] = dict(geom)
+            elif "geom" in it:
+                del it["geom"]
+
+
 def capture_workspace(ws: str) -> list[dict]:
     clients = hypr_j("clients")
     monitors = list(hypr_j("monitors") or [])
+    group_of, group_members = group_tokens(clients)
+    bar_px = groupbar_px() if group_of else 0
+    group_active = {
+        token: active_group_member(clients, addrs)
+        for token, addrs in group_members.items()
+    }
     out = []
     for c in clients:
         w = c.get("workspace") or {}
@@ -252,21 +376,37 @@ def capture_workspace(ws: str) -> list[dict]:
             item["cwd"] = cwd
         if url:
             item["url"] = url
-        g = geom_from_client(c, mon)
+        addr = str(c.get("address") or "")
+        token = group_of.get(addr, "")
+        if token and item["place"] != "float":
+            item["group"] = token
+            if group_active.get(token) == addr:
+                item["groupActive"] = True
+        g = geom_from_client(c, mon, grow_top=bar_px if item.get("group") else 0)
         if g:
             item["geom"] = g
+        item["_addr"] = addr
         out.append(item)
     out.sort(key=lambda it: (
         it.get("place") == "float",
         float((it.get("geom") or {}).get("x") or 0),
         float((it.get("geom") or {}).get("y") or 0),
     ))
-    tessellate_tile_geoms(out)
-    tiled_n = sum(1 for it in out if it.get("place") != "float")
+    out = order_group_members(out, group_members)
+    # A group is one tile, so snap tiles with the group collapsed and then give
+    # every member the tile's geom. Doing it in this order also cancels the
+    # groupbar offset for column and row splits, which tessellation normalises
+    # to y=0/h=1 — otherwise each capture would shave the tile again.
+    proxies = collapse_group_tiles(out)
+    tessellate_tile_geoms(proxies)
+    fan_out_group_tiles(proxies)
+    tiled_n = sum(1 for p in proxies if p.get("place") != "float")
     if tiled_n >= 2:
         for it in out:
             if it.get("place") != "float":
                 it["lockPlace"] = True
+    for it in out:
+        it.pop("_addr", None)
     return out
 
 

@@ -1452,6 +1452,29 @@ function applyShapeToApps(apps, shapeId) {
     return list
 }
 
+// A Hyprland group occupies a single tile, so the preview must pack one pane
+// per group rather than one per window. Returns the tile representatives in
+// order plus, for each input index, the representative it belongs to.
+function collapseGroupTiles(list) {
+    var tiles = []
+    var owner = []
+    var seen = {}
+    for (var i = 0; i < list.length; i++) {
+        var token = list[i] && list[i].group ? String(list[i].group) : ""
+        if (!token || assignmentPlace(list[i]) === "float") {
+            owner.push(tiles.length)
+            tiles.push(list[i])
+            continue
+        }
+        if (seen[token] === undefined) {
+            seen[token] = tiles.length
+            tiles.push(list[i])
+        }
+        owner.push(seen[token])
+    }
+    return { tiles: tiles, owner: owner }
+}
+
 function chipGeomsForWorkspace(profile, workspace) {
     var ws = parseInt(workspace, 10)
     var list = []
@@ -1462,7 +1485,8 @@ function chipGeomsForWorkspace(profile, workspace) {
     }
     if (!list.length) return [{ x: 0, y: 0, w: 0.5, h: 1 }, { x: 0.5, y: 0, w: 0.5, h: 1 }]
     var pref = effectiveWorkspacePref(profile, ws)
-    return packedGeomsForApps(list, pref.layout, 1 / Math.max(1, pref.visibleCount))
+    var collapsed = collapseGroupTiles(list)
+    return packedGeomsForApps(collapsed.tiles, pref.layout, 1 / Math.max(1, pref.visibleCount))
 }
 
 function geomRight(g) { return Number(g.x) + Number(g.w) }
@@ -2092,10 +2116,13 @@ function ensureAssignmentGeoms(assignments, ws, pref) {
         }
     }
     if (!group.length) return list
-    var packed = packedGeomsForApps(group, (pref && pref.layout) || "dwindle", 1 / Math.max(1, (pref && pref.visibleCount) || 2))
+    // Group members share their tile's geom, so pack tiles and then hand the
+    // same box to every window in that tile.
+    var collapsed = collapseGroupTiles(group)
+    var packed = packedGeomsForApps(collapsed.tiles, (pref && pref.layout) || "dwindle", 1 / Math.max(1, (pref && pref.visibleCount) || 2))
     for (var g = 0; g < group.length; g++) {
         if (assignmentHasGeom(group[g])) continue
-        var pg = packed[g]
+        var pg = packed[collapsed.owner[g]]
         if (!pg) continue
         list[idxs[g]].geom = { x: pg.x, y: pg.y, w: pg.w, h: pg.h }
     }
