@@ -21,6 +21,9 @@ Item {
 
     readonly property var appLibrary: root.bar && root.bar.shell ? root.bar.shell.appLibrary : null
     readonly property int paneCount: (assignedApps || []).length
+    // One entry per assignment: null when ungrouped, {rep, repIndex, tabs, active}
+    // otherwise. A group is one tile, so only the representative gets a pane.
+    readonly property var groupPreview: Model.groupPreviewTiles(assignedApps)
 
     signal layoutChanged(var tiles)
     signal layoutCleared()
@@ -58,6 +61,11 @@ Item {
         liveGeoms = packedFromApps()
         refreshSplits()
         if (selectedIndex >= paneCount) selectedIndex = Math.max(0, paneCount - 1)
+        // Selecting a hidden group member would leave nothing highlighted and
+        // point the gear and place controls at a pane nobody can see, so the
+        // selection always lands on the tile that is actually drawn.
+        var gp = root.groupPreview
+        if (gp && gp[selectedIndex] && gp[selectedIndex].rep === false) selectedIndex = gp[selectedIndex].repIndex
     }
 
     function commitLive() {
@@ -153,6 +161,11 @@ Item {
                     readonly property int paneIndex: index
                     readonly property var geom: (root.liveGeoms && root.liveGeoms[index]) ? root.liveGeoms[index] : { x: 0, y: 0, w: 1, h: 1 }
                     readonly property bool floating: modelData && modelData.place === "float"
+                    readonly property var groupInfo: (root.groupPreview && root.groupPreview[index]) ? root.groupPreview[index] : null
+                    // Members of a group share one tile; the first one draws it.
+                    visible: !groupInfo || groupInfo.rep
+                    // The pane shows whichever tab was on top at capture time.
+                    readonly property var faceApp: (groupInfo && groupInfo.active) ? groupInfo.active : modelData
                     x: geom.x * board.width
                     y: geom.y * board.height
                     width: Math.max(24, geom.w * board.width)
@@ -178,11 +191,54 @@ Item {
                             anchors.left: parent.left
                             anchors.top: parent.top
                             anchors.margins: 8
+                            anchors.topMargin: 8 + (pane.groupInfo && pane.groupInfo.rep ? 20 : 0)
                             text: floating ? "FLOAT" : "TILE"
                             color: Color.accent
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption - 2
                             font.bold: true
+                        }
+                        // Groupbar stand-in: one chip per member, in capture order,
+                        // with the tab that was on top picked out.
+                        Row {
+                            id: orgTabStrip
+                            // Repeater counts as a child of this Row, so widths come
+                            // from the tab list itself rather than children.length.
+                            readonly property var tabs: (pane.groupInfo && pane.groupInfo.tabs) ? pane.groupInfo.tabs : []
+                            readonly property real chipW: Math.max(0, (width - (tabs.length - 1) * 3) / Math.max(1, tabs.length))
+                            visible: tabs.length > 0
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.margins: 6
+                            height: 16
+                            spacing: 3
+                            Repeater {
+                                model: orgTabStrip.tabs
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    width: orgTabStrip.chipW
+                                    height: orgTabStrip.height
+                                    radius: 4
+                                    color: modelData.active
+                                           ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.55)
+                                           : Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.14)
+                                    Text {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 4
+                                        anchors.rightMargin: 4
+                                        textFormat: Text.PlainText
+                                        text: modelData.name
+                                        color: Color.foreground
+                                        font.family: Style.font.family
+                                        font.pixelSize: Style.font.caption - 2
+                                        font.bold: modelData.active
+                                        elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                            }
                         }
                         Text {
                             anchors.centerIn: parent
@@ -190,7 +246,7 @@ Item {
                             horizontalAlignment: Text.AlignHCenter
                             wrapMode: Text.Wrap
                             textFormat: Text.PlainText
-                            text: (modelData && modelData.name) || "App"
+                            text: (pane.faceApp && pane.faceApp.name) || "App"
                             color: Color.foreground
                             font.family: Style.font.family
                             font.pixelSize: Style.font.body

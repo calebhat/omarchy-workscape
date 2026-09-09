@@ -144,6 +144,47 @@ def geom_pixels(geom: dict[str, Any], metrics: dict[str, float]) -> dict[str, in
     return {"x": int(round(x)), "y": int(round(y)), "w": int(round(w)), "h": int(round(h))}
 
 
+def groupbar_px() -> int:
+    """Vertical space a groupbar steals from a grouped window's tile.
+
+    A grouped window's box starts below its groupbar, so its height is short by
+    this much compared with the tile the whole group occupies. Measured as
+    height + gaps_in + indicator_height, which matches Hyprland (22 + 5 + 1 = 28
+    with the stock Omarchy groupbar).
+    """
+    try:
+        if not (hypr_j("getoption group:groupbar:enabled", cached=True) or {}).get("bool"):
+            return 0
+    except Exception:
+        return 0
+
+    def _int(name: str, default: int) -> int:
+        try:
+            return int((hypr_j(f"getoption {name}", cached=True) or {}).get("int", default))
+        except Exception:
+            return default
+
+    return max(0, _int("group:groupbar:height", 22)
+               + _int("group:groupbar:gaps_in", 5)
+               + _int("group:groupbar:indicator_height", 1))
+
+
+def tile_px(addr: str, geom: dict[str, Any], metrics: dict[str, float]) -> dict[str, int]:
+    """Pixels to stamp on `addr` so the tile it occupies matches `geom`.
+
+    For a grouped window the box we can set is the one below the groupbar, so
+    asking for the full tile would push the group past its neighbours by the
+    groupbar height on every apply.
+    """
+    px = geom_pixels(geom, metrics)
+    bar = 0
+    if len(_group_member_addrs(str(addr), cached=True)) >= 2:
+        bar = groupbar_px()
+    if bar and int(px.get("h") or 0) > bar * 2:
+        px = dict(px, y=int(px["y"]) + bar, h=int(px["h"]) - bar)
+    return px
+
+
 def box_to_geom(box: dict[str, int], metrics: dict[str, float], min_size: float = 0.04) -> dict[str, float]:
     mw = float(metrics.get("w") or 1) or 1.0
     mh = float(metrics.get("h") or 1) or 1.0
@@ -206,11 +247,20 @@ def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
         layout = "dwindle"
     n_lock = 0
     locked = []
+    seen_groups: set[str] = set()
     for a in profile.get("assignments") or []:
         if a.get("enabled") is False:
             continue
         if str(a.get("workspace") or "") != str(ws):
             continue
+        # A Hyprland group is a single tile. Only its first enabled member
+        # stands in for it here, or the split would be laid out for one pane
+        # per window and the group would be squeezed into a fraction of it.
+        token = str(a.get("group") or "")
+        if token:
+            if token in seen_groups:
+                continue
+            seen_groups.add(token)
         if a.get("lockPlace") is True or a.get("geom"):
             locked.append(a)
         if a.get("lockPlace") is True:
@@ -1150,7 +1200,7 @@ def match_locked_items(
         items.append({
             "addr": str(hit["address"]),
             "geom": g,
-            "px": geom_pixels(g, metrics),
+            "px": tile_px(hit["address"], g, metrics),
             "name": assignment.get("name"),
             "lock": True,
             "class": str(hit.get("class") or hit.get("initialClass") or ""),
@@ -1816,6 +1866,131 @@ def restamp_layout_sizes(ws: str, profile: dict[str, Any] | None = None) -> dict
     return {"ok": True, "mode": "dwindle", "workspace": ws}
 
 
+def group_plan_for_workspace(profile: dict[str, Any], ws: str) -> list[list[dict[str, Any]]]:
+    """Assignments per Hyprland group on this workspace, in stored tab order.
+
+    Groups of one are dropped: a lone member is an ordinary tile.
+    """
+    order: list[str] = []
+    by_token: dict[str, list[dict[str, Any]]] = {}
+    for a in profile.get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        if str(a.get("workspace") or "") != str(ws):
+            continue
+        token = str(a.get("group") or "")
+        if not token:
+            continue
+        if token not in by_token:
+            by_token[token] = []
+            order.append(token)
+        by_token[token].append(a)
+    return [by_token[t] for t in order if len(by_token[t]) > 1]
+
+
+def _group_member_addrs(addr: str, cached: bool = False) -> list[str]:
+    """Addresses Hyprland reports as sharing a group with `addr`."""
+    for c in hypr_j("clients", cached=cached) or []:
+        if str(c.get("address") or "") == addr:
+            return [str(a) for a in (c.get("grouped") or []) if a]
+    return []
+
+
+def add_window_to_group(ws: str, host_addr: str, addr: str) -> bool:
+    """Put `addr` into the group that `host_addr` already belongs to.
+
+    Uses the Lua object API rather than a dispatcher on purpose:
+    hl.dsp.group.move_window() is a silent no-op here (it moves nothing for any
+    argument shape tried, with or without a clean neighbour in the direction
+    given), while Workspace:get_groups() plus Group:add() is deterministic and
+    also works for a window that was already running, which is the common case
+    once Apply reuses windows instead of launching them.
+    """
+    ws_s = SAFE.safe_ws(ws)
+    host = SAFE.safe_addr(host_addr)
+    member = SAFE.safe_addr(addr)
+    if not ws_s or not host or not member or host == member:
+        return False
+    hypr_eval(
+        f'local ws = hl.get_workspace("{ws_s}") '
+        "if ws == nil then return end "
+        f'local w = hl.get_window("address:{member}") '
+        "if w == nil then return end "
+        "for _, g in ipairs(ws:get_groups() or {}) do "
+        "  for _, m in ipairs(g.members or {}) do "
+        f'    if m.address == "{host}" then g:add(w) return end '
+        "  end "
+        "end"
+    )
+    cache_clear()
+    return member in _group_member_addrs(host)
+
+
+def ensure_groups_for_workspace(
+    ws: str, profile: dict[str, Any], clients: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Rebuild this workspace's stored groups from whatever is running.
+
+    Runs before the tiled split so the layout is computed for one tile per
+    group. Windows that are not running are simply skipped; a group needs two
+    present members to be worth creating.
+    """
+    plan = group_plan_for_workspace(profile, str(ws))
+    if not plan:
+        return []
+    if clients is None:
+        clients = hypr_j("clients") or []
+    on_ws = [
+        c for c in clients
+        if str((c.get("workspace") or {}).get("id")) == str(ws)
+        or str((c.get("workspace") or {}).get("name")) == str(ws)
+    ]
+    out: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for members in plan:
+        matched: list[tuple[dict[str, Any], str]] = []
+        for a in members:
+            hit = match_client(a, on_ws, used)
+            if not hit:
+                continue
+            used.add(hit["address"])
+            matched.append((a, str(hit["address"])))
+        token = str(members[0].get("group") or "")
+        if len(matched) < 2:
+            out.append({"group": token, "ok": False, "reason": "fewer than two windows present",
+                        "matched": len(matched)})
+            continue
+        head_addr = matched[0][1]
+        # Make the first member a group, unless it already is one.
+        if len(_group_member_addrs(head_addr)) < 1:
+            focus_window(head_addr)
+            hypr_eval("hl.dispatch(hl.dsp.group.toggle())")
+            cache_clear()
+        added = [head_addr]
+        for _, addr in matched[1:]:
+            if addr in _group_member_addrs(head_addr):
+                added.append(addr)
+                continue
+            if add_window_to_group(str(ws), head_addr, addr):
+                added.append(addr)
+        # The tab on top is whichever member was focused last, so focus the one
+        # the profile marks active. Apply restores the caller's focus at the end.
+        active_addr = ""
+        for a, addr in matched:
+            if a.get("groupActive") is True:
+                active_addr = addr
+        if active_addr and active_addr in added:
+            focus_window(active_addr)
+        out.append({
+            "group": token,
+            "ok": len(added) >= 2,
+            "members": added,
+            "active": active_addr,
+        })
+    cache_clear()
+    return out
+
+
 def restore_locks_for_workspace(
     ws: str,
     cfg: dict[str, Any] | None = None,
@@ -1844,10 +2019,16 @@ def restore_locks_for_workspace(
         return {"ok": False, "error": "no profile"}
     if occupied_skip(str(ws), profile):
         return {"ok": True, "skipped": True, "workspace": str(ws), "reason": "occupied"}
+    # Groups first: they turn several windows into one tile, so the split below
+    # has to be computed after they exist.
+    groups = ensure_groups_for_workspace(str(ws), profile)
     plan = lock_plan_for_workspace(profile, str(ws))
     locked = plan["locked"]
     if not locked:
-        return restamp_layout_sizes(str(ws), profile)
+        out = restamp_layout_sizes(str(ws), profile)
+        if groups:
+            out["groups"] = groups
+        return out
     result = _settle_workspace_once(str(ws), plan, prefer_addr)
     if result.get("closeEnough") is False:
         time.sleep(0.1)
@@ -1862,6 +2043,8 @@ def restore_locks_for_workspace(
             focus_window(prev_addr)
         elif prev_ws:
             focus_workspace(prev_ws)
+    if groups:
+        result["groups"] = groups
     return result
 
 
@@ -1907,7 +2090,7 @@ def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "")
         items.append({
             "addr": hit["address"],
             "geom": g,
-            "px": geom_pixels(g, metrics),
+            "px": tile_px(hit["address"], g, metrics),
             "name": a.get("name"),
             "lock": True,
         })
