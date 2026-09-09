@@ -97,9 +97,20 @@ def shell_cwd(pid: int) -> str:
 def url_from_client(c: dict) -> str:
     cls = str(c.get("class") or "")
     title = str(c.get("title") or "")
-    m = re.match(r"^(?:brave|chrome|chromium|google-chrome)-(.+?)(?:_-Default)?$", cls)
+    # Chromium/Brave build an app window's class as
+    # "<browser>-<host>__<path>-<profile-dir>", where the profile directory is
+    # "Default" for the default profile and "Profile_N" otherwise. Stripping only
+    # the exact "_-Default" left the suffix in place for every other case, so a
+    # non-default profile turned into a bogus path segment ("/-Profile/1") that
+    # then compounded on each re-capture, and "<path>-Default" kept the
+    # "-Default". Strip either suffix, then drop the separator left behind when
+    # the path was empty.
+    m = re.match(
+        r"^(?:brave|chrome|chromium|google-chrome)-(.+?)(?:_?-Default|_?-Profile_\d+)?$",
+        cls,
+    )
     if m and "." in m.group(1):
-        rest = m.group(1)
+        rest = m.group(1).rstrip("_")
         host, _, path = rest.partition("__")
         path = path.replace("_", "/")
         if host and "/" not in host:
