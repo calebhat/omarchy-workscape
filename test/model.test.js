@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr, collapseGroupTiles }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr, collapseGroupTiles, groupPreviewTiles }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -494,6 +494,48 @@ const withChrome = m.normalizeAssignment({ workspace: 2, exec: "foot", chrome: {
 if (!withChrome.chrome || withChrome.chrome.opacityActive !== 0.5 || withChrome.chrome.borderSize !== 3) throw new Error("chrome persist on assignment")
 const noChrome = m.normalizeAssignment({ workspace: 2, exec: "foot" })
 if (noChrome.chrome) throw new Error("default chrome omitted")
+
+// A captured group token has to survive normalization: capture writes `group`
+// (and `groupActive` on the tab that was on top), and apply rebuilds the group
+// from them. Dropping either here silently degrades a group into loose windows.
+const grouped = m.normalizeAssignment({ workspace: 10, exec: "foot", group: "g2", groupActive: true })
+if (grouped.group !== "g2") throw new Error("group token persists on assignment")
+if (grouped.groupActive !== true) throw new Error("groupActive persists on assignment")
+const groupedTab = m.normalizeAssignment({ workspace: 10, exec: "foot", group: "g2" })
+if (groupedTab.group !== "g2") throw new Error("group token persists without groupActive")
+if ("groupActive" in groupedTab) throw new Error("groupActive omitted when not the active tab")
+const ungrouped = m.normalizeAssignment({ workspace: 10, exec: "foot", groupActive: true })
+if ("group" in ungrouped || "groupActive" in ungrouped) throw new Error("groupActive alone is not a group")
+
+// The preview draws one pane per tile, so a group's non-representative members
+// are hidden and the representative carries a tab strip naming every member.
+const gpList = [
+  { id: "a", name: "WhatsApp", exec: "wa", group: "g2" },
+  { id: "b", name: "Telegram", exec: "tg", group: "g2", groupActive: true },
+  { id: "c", name: "Spotify", exec: "sp" }
+]
+const gp = m.groupPreviewTiles(gpList)
+if (gp.length !== 3) throw new Error("one preview entry per assignment")
+if (!gp[0] || gp[0].rep !== true) throw new Error("first group member represents the tile")
+if (gp[0].tabs.length !== 2) throw new Error("tab strip names every group member")
+if (gp[0].tabs[0].name !== "WhatsApp" || gp[0].tabs[1].name !== "Telegram") throw new Error("tabs keep capture order")
+if (gp[0].tabs[0].active !== false || gp[0].tabs[1].active !== true) throw new Error("groupActive marks the active tab")
+if (gp[0].active !== gpList[1]) throw new Error("representative exposes the active member")
+if (!gp[1] || gp[1].rep !== false) throw new Error("later group members are hidden")
+if (gp[2] !== null) throw new Error("ungrouped window has no preview entry")
+// With no groupActive anywhere the first member stands in, so the pane never
+// renders nameless.
+const gpNoActive = m.groupPreviewTiles([{ id: "a", name: "A", exec: "a", group: "g" }, { id: "b", name: "B", exec: "b", group: "g" }])
+if (gpNoActive[0].active !== null) throw new Error("no active member when none is marked")
+if (gpNoActive[0].tabs[0].active !== false) throw new Error("no tab is active when none is marked")
+// A floating window is never part of a tile group, matching collapseGroupTiles.
+const gpFloat = m.groupPreviewTiles([{ id: "a", name: "A", exec: "a", group: "g", place: "float" }, { id: "b", name: "B", exec: "b", group: "g" }])
+if (gpFloat[0] !== null) throw new Error("floating window is not grouped")
+// Dropping the float leaves one member, and a lone member is not a group —
+// the same rule scripts/capture applies when it refuses to emit a token.
+if (gpFloat[1] !== null) throw new Error("lone remaining member is not a group")
+const gpLone = m.groupPreviewTiles([{ id: "a", name: "A", exec: "a", group: "g" }])
+if (gpLone[0] !== null) throw new Error("single-member group is not a group")
 
 const isoCfg = m.sanitizeConfig({
   version: 2,
