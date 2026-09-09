@@ -104,6 +104,58 @@ def test_write_registers_workspace_swipe(tmp_path, monkeypatch=None):
         os.environ.pop("WORKSCAPE_STATE_DIR", None)
 
 
+def test_keyboard_binds_reach_hyprland_without_persist(tmp_path):
+    """The generated file only reaches Hyprland when the user opts into
+    persisting it, so the workspace keybinds have to be registered live the way
+    the swipe gesture already is. Otherwise turning the toggle on writes a file
+    nobody reads and SUPER+,/. keep whatever they were bound to."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    hypr = tmp_path / "hypr"
+    hypr.mkdir()
+    state = tmp_path / "state"
+    state.mkdir(exist_ok=True)
+    os.environ["WORKSCAPE_STATE_DIR"] = str(state)
+    os.environ["XDG_STATE_HOME"] = str(state)
+    (hypr / "hyprland.lua").write_text("-- user hyprland\n")
+    cfg = {
+        "settings": {
+            "persistHyprGestures": False,
+            "gestures": {"workspaceSwipe": False, "keyboard": True, "skipEmpty": True},
+        }
+    }
+    seen = []
+    orig_eval = g.hypr_eval
+    g.hypr_eval = lambda lua: seen.append(lua)
+    try:
+        g.write_and_apply(cfg, hypr_dir=str(hypr / "workscape-gestures.lua"))
+        assert not (hypr / "workscape-gestures.lua").exists()
+        joined = "\n".join(seen)
+        assert 'o.bind("SUPER + comma"' in joined, "previous-workspace bind never reached Hyprland"
+        assert 'o.bind("SUPER + period"' in joined, "next-workspace bind never reached Hyprland"
+        assert 'workspace = "e-1"' in joined and 'workspace = "e+1"' in joined
+        assert 'hl.unbind("SUPER + comma")' in joined, "the old binding is not released"
+        # Turning it back off must release the keys rather than leave them bound.
+        seen.clear()
+        cfg["settings"]["gestures"]["keyboard"] = False
+        g.write_and_apply(cfg, hypr_dir=str(hypr / "workscape-gestures.lua"))
+        joined = "\n".join(seen)
+        assert 'o.bind("SUPER + comma"' not in joined, "binds re-registered while disabled"
+        assert 'hl.unbind("SUPER + comma")' in joined, "keys stay bound after disabling"
+        # Never take SUPER+, from someone who has this switched off: it is
+        # Omarchy's dismiss-notification bind.
+        seen.clear()
+        state2 = tmp_path / "state2"
+        state2.mkdir(exist_ok=True)
+        os.environ["XDG_STATE_HOME"] = str(state2)
+        g.write_and_apply(cfg, hypr_dir=str(hypr / "workscape-gestures.lua"))
+        assert 'hl.unbind("SUPER + comma")' not in "\n".join(seen), \
+            "released a key the user never handed over"
+    finally:
+        g.hypr_eval = orig_eval
+        os.environ.pop("WORKSCAPE_STATE_DIR", None)
+        os.environ.pop("XDG_STATE_HOME", None)
+
+
 def test_restore_leaves_user_owned_files(tmp_path):
     os.environ["WORKSCAPE_STATE_DIR"] = str(tmp_path / "state")
     (tmp_path / "state").mkdir(parents=True, exist_ok=True)
@@ -149,5 +201,6 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as d:
         test_ensure_hyprland_require(P(d))
         test_write_registers_workspace_swipe(P(d))
+        test_keyboard_binds_reach_hyprland_without_persist(P(d) / "kb")
         test_restore_leaves_user_owned_files(P(d) / "keep")
     print("gestures.test.py ok")
