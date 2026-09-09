@@ -1503,9 +1503,9 @@ function groupPreviewTiles(list) {
                 if (isActive && !active) active = src[k]
                 tabs.push({ id: String(src[k].id || ""), name: String(src[k].name || "App"), exec: String(src[k].exec || src[k].command || ""), active: isActive })
             }
-            out.push({ rep: true, tabs: tabs, active: active })
+            out.push({ rep: true, repIndex: j, tabs: tabs, active: active })
         } else {
-            out.push({ rep: false, tabs: [], active: null })
+            out.push({ rep: false, repIndex: reps[token], tabs: [], active: null })
         }
     }
     return out
