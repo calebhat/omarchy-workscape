@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, collapseGroupTiles }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -669,5 +669,22 @@ if (m.workspaceForcesBlock({ assignments: shaped, workspacePrefs: { "1": { layou
 const twoLockEffKeep = m.effectiveWorkspacePref({ assignments: shaped, workspacePrefs: { "1": { layout: "scrolling", extras: "around" } } }, 1)
 if (twoLockEffKeep.layout !== "dwindle" || twoLockEffKeep.extras !== "block")
   throw new Error("two lock still dwindle+block for apply")
+
+// A Hyprland group is one tile: the preview packs one pane per group.
+const groupApps = [
+  { id: "t", workspace: 1, exec: "telegram", name: "Telegram", group: "g1" },
+  { id: "s", workspace: 1, exec: "signal", name: "Signal", group: "g1" },
+  { id: "m", workspace: 1, exec: "spotify", name: "Spotify" }
+]
+const col = m.collapseGroupTiles(groupApps)
+if (col.tiles.length !== 2) throw new Error("group collapses to one tile")
+if (col.owner.join(",") !== "0,0,1") throw new Error("both members map to the same tile")
+const groupChip = m.chipGeomsForWorkspace({ assignments: groupApps, workspacePrefs: {} }, 1)
+if (groupChip.length !== 2) throw new Error("chip draws one pane per group, not per window")
+const geomed = m.ensureAssignmentGeoms(groupApps.map(a => Object.assign({}, a)), 1, { layout: "dwindle" })
+if (JSON.stringify(geomed[0].geom) !== JSON.stringify(geomed[1].geom))
+  throw new Error("group members must share their tile geom")
+if (JSON.stringify(geomed[1].geom) === JSON.stringify(geomed[2].geom))
+  throw new Error("the ungrouped window keeps its own tile")
 
 console.log("model.test.js ok")

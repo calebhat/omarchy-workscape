@@ -229,6 +229,15 @@ def normalize_assignment(a: Any) -> dict[str, Any] | None:
     cls = _s(a.get("class") or a.get("windowClass"), 80).strip()
     if cls:
         out["class"] = cls
+    # Hyprland window group this assignment belongs to. Members of one group
+    # share a token and occupy a single tile; order inside the group is the
+    # order of the assignments themselves. groupActive marks the tab that was
+    # on top when the workspace was captured.
+    group = _s(a.get("group"), 40).strip()
+    if group:
+        out["group"] = group
+        if a.get("groupActive") is True:
+            out["groupActive"] = True
     geom = normalize_geom(a.get("geom"))
     if geom:
         out["geom"] = geom
