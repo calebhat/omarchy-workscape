@@ -504,6 +504,9 @@ if (gp[0].tabs[0].name !== "WhatsApp" || gp[0].tabs[1].name !== "Telegram") thro
 if (gp[0].tabs[0].active !== false || gp[0].tabs[1].active !== true) throw new Error("groupActive marks the active tab")
 if (gp[0].active !== gpList[1]) throw new Error("representative exposes the active member")
 if (!gp[1] || gp[1].rep !== false) throw new Error("later group members are hidden")
+// Every member points at the pane that stands in for it, so a selection landing
+// on a hidden member can be redirected to the tile actually on screen.
+if (gp[0].repIndex !== 0 || gp[1].repIndex !== 0) throw new Error("members point at their representative")
 if (gp[2] !== null) throw new Error("ungrouped window has no preview entry")
 // With no groupActive anywhere the first member stands in, so the pane never
 // renders nameless.
