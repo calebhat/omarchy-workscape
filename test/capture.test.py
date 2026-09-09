@@ -104,6 +104,24 @@ def test_capture_ws2_keeps_uneven_split():
     assert left["geom"]["w"] != 1
 
 
+def test_url_from_client_strips_browser_profile_dir():
+    # Chromium/Brave append the profile directory to an app window's class.
+    # Only "Default" used to be stripped, so any other profile leaked into the
+    # path and grew by one segment every time the launched window was recaptured.
+    cases = [
+        ("chrome-web.whatsapp.com__-Profile_1", "https://web.whatsapp.com"),
+        ("chrome-web.whatsapp.com__-Default", "https://web.whatsapp.com"),
+        ("brave-meet.google.com__-Profile_3", "https://meet.google.com"),
+        ("chrome-app.slack.com__client-Default", "https://app.slack.com/client"),
+        ("brave-www.youtube.com__watch-Profile_2", "https://www.youtube.com/watch"),
+    ]
+    for cls, want in cases:
+        got = cap.url_from_client({"class": cls, "title": "", "pid": 0})
+        assert got == want, f"{cls}: {got!r} != {want!r}"
+    # A plain browser window is not a web app and must not yield a URL.
+    assert cap.url_from_client({"class": "brave-browser", "title": "", "pid": 0}) == ""
+
+
 def test_tessellate_columns():
     items = [
         {"place": "tile", "geom": {"x": 0.001, "y": 0.002, "w": 0.758, "h": 0.99}},
@@ -118,5 +136,6 @@ def test_tessellate_columns():
 
 if __name__ == "__main__":
     test_capture_ws2_keeps_uneven_split()
+    test_url_from_client_strips_browser_profile_dir()
     test_tessellate_columns()
     print("capture.test.py ok")
