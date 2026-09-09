@@ -20,6 +20,17 @@ assert "reexec_apply_detached" not in body
 print("fresh locks before close ok")
 PY
 
+python3 - "$SH" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text()
+start = text.index("launch_profile_assignments()")
+end = text.index("\ncmd_apply(")
+body = text[start:end]
+assert 'boot_log="${STATE_DIR}/launch.log"' in body, "set -u aborts apply before geom if boot_log is unset"
+print("launch boot_log is bound ok")
+PY
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 export WORKSCAPE_STATE_DIR=$TMP

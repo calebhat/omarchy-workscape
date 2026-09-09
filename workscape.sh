@@ -13,6 +13,9 @@ PREV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/auto-workspace"
 LEGACY_CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/tenzin.auto-workspace/config.json"
 STATE_FILE="$STATE_DIR/state.json"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Omarchy reloads the plugin on any file write under this folder (including
+# Python's __pycache__). Never write bytecode here or Capture closes the panel.
+export PYTHONDONTWRITEBYTECODE=1
 MATCH="$PLUGIN_DIR/scripts/match"
 GEOM="$PLUGIN_DIR/scripts/geom"
 GESTURES="$PLUGIN_DIR/scripts/gestures"
@@ -790,6 +793,7 @@ launch_profile_assignments() {
   if ! [[ $stagger =~ ^[0-9]+$ ]]; then stagger=80; fi
   if ((stagger > 2000)); then stagger=2000; fi
   silent=$(jq_config -r '.settings.silent // true')
+  local boot_log="${STATE_DIR}/launch.log"
   local clients_json used_addrs=""
   clients_json=$(hypr_clients_json)
   local occupied_ws="${WORKSCAPE_OCCUPIED_WS:-}"

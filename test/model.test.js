@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -633,5 +633,41 @@ const named = m.upsertLiveMonitor({
 }, { name: "DVI-I-1", description: "HP Inc. HP E24 G5 SN-LEFT", serial: "", make: "HP Inc.", model: "HP E24 G5" })
 const filled = named.config.monitors.find(function(x) { return x.id === "desk-left" })
 if (!filled || filled.name !== "DVI-I-1") throw new Error("upsert fills empty connector name")
+
+if (m.evalPayload("hl.dispatch(1)").indexOf("do\n") !== 0) throw new Error("evalPayload wraps")
+if (m.evalPayload("-- comment\nhl.x()").charAt(0) !== "d") throw new Error("evalPayload must not start with dash")
+if (Math.abs(m.snapPosition(0.49) - 0.5) > 0.0001) throw new Error("snap half")
+if (Math.abs(m.snapPosition(0.47, false) - 0.47) > 0.0001) throw new Error("snap off")
+const twoCol = [{ x: 0, y: 0, w: 0.4, h: 1 }, { x: 0.4, y: 0, w: 0.6, h: 1 }]
+const splitV = m.listSplits(twoCol).find(function(s) { return s.axis === "v" })
+if (!splitV) throw new Error("listSplits vertical")
+const evenedSplit = m.evenSplit(twoCol, splitV)
+if (Math.abs(evenedSplit[0].w - 0.5) > 0.02) throw new Error("evenSplit mid " + evenedSplit[0].w)
+const freeNudge = m.nudgeSplit(twoCol, splitV, 0.09)
+if (Math.abs(freeNudge[0].w - 0.49) > 0.02) throw new Error("nudge default is free " + freeNudge[0].w)
+const snappedNudge = m.nudgeSplit(twoCol, splitV, 0.09, { snap: true })
+if (Math.abs(snappedNudge[0].w - 0.5) > 0.02) throw new Error("nudge snap to half, got " + snappedNudge[0].w)
+const ids = m.shapePresets().map(function(s) { return s.id })
+if (ids.indexOf("focus") < 0 || ids.indexOf("thirds") < 0 || ids.indexOf("grid") < 0) throw new Error("shape library")
+const focus3 = m.shapeRects(m.findShape("focus"), 3)
+if (focus3.length !== 3) throw new Error("focus 3")
+if (Math.abs(focus3[0].w - 0.5) > 0.02) throw new Error("focus fill-order first is centre")
+const even3 = m.shapeRects(m.findShape("even"), 3)
+if (even3.length !== 3) throw new Error("even extend")
+const shapeApps = [
+  { id: "a", workspace: 1, exec: "foot", name: "Foot" },
+  { id: "b", workspace: 1, exec: "brave", name: "Brave" }
+]
+const shaped = m.applyShapeToApps(shapeApps, "main")
+if (Math.abs(shaped[0].geom.w - 0.6) > 0.02) throw new Error("main left")
+if (shaped[0].lockPlace !== true || shaped[1].lockPlace !== true) throw new Error("shape locks two panes")
+if (m.describeShape(m.findShape("focus")).indexOf("25 / 50 / 25") < 0) throw new Error("describe focus")
+const chip = m.chipGeomsForWorkspace({ assignments: shaped, workspacePrefs: {} }, 1)
+if (chip.length !== 2) throw new Error("chip geoms")
+if (m.workspaceForcesBlock({ assignments: shaped, workspacePrefs: { "1": { layout: "scrolling" } } }, 1) !== true)
+  throw new Error("two locked shape panes still force block")
+const twoLockEffKeep = m.effectiveWorkspacePref({ assignments: shaped, workspacePrefs: { "1": { layout: "scrolling", extras: "around" } } }, 1)
+if (twoLockEffKeep.layout !== "dwindle" || twoLockEffKeep.extras !== "block")
+  throw new Error("two lock still dwindle+block for apply")
 
 console.log("model.test.js ok")

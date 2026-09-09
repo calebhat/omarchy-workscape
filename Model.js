@@ -62,6 +62,12 @@ function parseCappedJson(txt, maxBytes) {
     }
 }
 
+function evalPayload(lua) {
+    var s = String(lua || "")
+    if (/^\s*do\b/.test(s)) return s
+    return "do\n" + s + "\nend"
+}
+
 function allowedMainView(v) {
     var s = String(v || "")
     if (s === "profiles" || s === "workspaces" || s === "displays" || s === "gestures") return s
@@ -1107,6 +1113,188 @@ var GEOM_EPS = 0.02
 var GEOM_MIN = 0.04
 var MAX_PANES = 20
 
+// Named split shapes stamp assignment geoms only. They do not change
+// dwindle/scrolling/master or extras/lock apply.
+var SNAP_POINTS = [0.20, 0.25, 1 / 3, 0.375, 0.382, 0.40, 0.50, 0.60, 0.618, 0.625, 2 / 3, 0.75, 0.80]
+var SNAP_TOLERANCE = 0.016
+
+function snapPosition(position, enabled) {
+    var pos = Number(position)
+    if (!isFinite(pos)) return 0
+    if (enabled === false) return pos
+    var best = pos
+    var bestDistance = SNAP_TOLERANCE
+    for (var i = 0; i < SNAP_POINTS.length; i++) {
+        var distance = Math.abs(pos - SNAP_POINTS[i])
+        if (distance <= bestDistance) {
+            bestDistance = distance
+            best = SNAP_POINTS[i]
+        }
+    }
+    return best
+}
+
+function shapePresets() {
+    return [
+        { id: "even", name: "Even", orientation: "columns", weights: [50, 50], overflow: "extend", underfill: "rescale" },
+        { id: "focus", name: "Focus", orientation: "columns", weights: [25, 50, 25], overflow: "last", underfill: "hold" },
+        { id: "main", name: "Main", orientation: "columns", weights: [60, 40], overflow: "last", underfill: "rescale" },
+        { id: "main-right", name: "Main right", orientation: "columns", weights: [40, 60], overflow: "first", underfill: "rescale" },
+        { id: "golden", name: "Golden", orientation: "columns", weights: [61.8, 38.2], overflow: "last", underfill: "rescale" },
+        { id: "thirds", name: "Thirds", orientation: "columns", weights: [100 / 3, 100 / 3, 100 / 3], overflow: "extend", underfill: "rescale" },
+        { id: "wide-centre", name: "Wide centre", orientation: "columns", weights: [20, 60, 20], overflow: "last", underfill: "hold" },
+        { id: "stacked", name: "Stacked", orientation: "rows", weights: [50, 50], overflow: "extend", underfill: "rescale" },
+        { id: "grid", name: "Grid", kind: "grid" }
+    ]
+}
+
+function findShape(id) {
+    var want = String(id || "")
+    var list = shapePresets()
+    for (var i = 0; i < list.length; i++) if (list[i].id === want) return list[i]
+    return null
+}
+
+function describeShape(shape) {
+    if (!shape) return ""
+    if (shape.kind === "grid") return "grid"
+    var weights = shape.weights || []
+    var parts = []
+    for (var i = 0; i < weights.length; i++) {
+        var n = Number(weights[i])
+        var rounded = Math.round(n)
+        parts.push(Math.abs(n - rounded) < 0.5 ? String(rounded) : n.toFixed(1))
+    }
+    return parts.join(" / ") + (shape.orientation === "rows" ? " (rows)" : "")
+}
+
+function fillOrder(weights) {
+    var index = []
+    for (var i = 0; i < weights.length; i++) index.push(i)
+    index.sort(function(a, b) {
+        if (weights[b] !== weights[a]) return weights[b] - weights[a]
+        return a - b
+    })
+    return index
+}
+
+function normalizeFracWeights(weights) {
+    var raw = []
+    var i
+    if (weights && weights.length) {
+        for (i = 0; i < weights.length && i < MAX_PANES; i++) {
+            var n = Number(weights[i])
+            raw.push(isFinite(n) && n > 0 ? n : 1)
+        }
+    }
+    if (!raw.length) return [1]
+    var total = 0
+    for (i = 0; i < raw.length; i++) total += raw[i]
+    if (total <= 0) {
+        for (i = 0; i < raw.length; i++) raw[i] = 1 / raw.length
+        return raw
+    }
+    var out = []
+    for (i = 0; i < raw.length; i++) out.push(raw[i] / total)
+    return out
+}
+
+function shapeRects(shape, count) {
+    var n = parseInt(count, 10)
+    if (!(n > 0)) return []
+    var spec = shape && typeof shape === "object" ? shape : findShape(shape) || {}
+    if (spec.kind === "grid") return autoLayoutRects(n, "dwindle", 0.49)
+
+    var orientation = spec.orientation === "rows" ? "rows" : "columns"
+    var overflow = spec.overflow === "first" || spec.overflow === "extend" ? spec.overflow : "last"
+    var underfill = spec.underfill === "hold" ? "hold" : "rescale"
+    var weights = (spec.weights || []).slice()
+    if (!weights.length) {
+        for (var e = 0; e < n; e++) weights.push(1)
+    }
+    if (n > weights.length && overflow === "extend") {
+        var last = weights[weights.length - 1]
+        while (weights.length < n) weights.push(last)
+    }
+    if (n < weights.length && underfill === "rescale") weights = weights.slice(0, n)
+
+    var frac = normalizeFracWeights(weights)
+    var slots = []
+    var running = 0
+    var i
+    for (i = 0; i < frac.length; i++) {
+        var size = frac[i]
+        if (orientation === "columns") slots.push({ x: running, y: 0, w: size, h: 1 })
+        else slots.push({ x: 0, y: running, w: 1, h: size })
+        running += size
+    }
+
+    if (n <= slots.length) {
+        if (underfill === "hold") {
+            var order = fillOrder(frac)
+            var outHold = []
+            for (i = 0; i < n; i++) outHold.push(normalizeGeom(slots[order[i]]))
+            return outHold
+        }
+        var out = []
+        for (i = 0; i < n; i++) out.push(normalizeGeom(slots[i]))
+        return out
+    }
+
+    var stackAt = overflow === "first" ? 0 : slots.length - 1
+    var partsN = n - slots.length + 1
+    var stacked = []
+    for (i = 0; i < slots.length; i++) {
+        var sg = slots[i]
+        if (i !== stackAt) {
+            stacked.push(normalizeGeom(sg))
+            continue
+        }
+        var p
+        for (p = 0; p < partsN; p++) {
+            if (orientation === "columns") {
+                stacked.push(normalizeGeom({ x: sg.x, y: sg.y + (sg.h / partsN) * p, w: sg.w, h: sg.h / partsN }))
+            } else {
+                stacked.push(normalizeGeom({ x: sg.x + (sg.w / partsN) * p, y: sg.y, w: sg.w / partsN, h: sg.h }))
+            }
+        }
+    }
+    return stacked
+}
+
+function applyShapeToApps(apps, shapeId) {
+    var list = clone(apps) || []
+    var shape = findShape(shapeId)
+    if (!shape || !list.length) return list
+    var tileIdx = []
+    var i
+    for (i = 0; i < list.length; i++) {
+        if (assignmentPlace(list[i]) !== "float") tileIdx.push(i)
+    }
+    var rects = shapeRects(shape, tileIdx.length)
+    for (i = 0; i < tileIdx.length; i++) {
+        var g = rects[i]
+        if (!g) continue
+        if (list[tileIdx[i]] && list[tileIdx[i]].id) g.id = list[tileIdx[i]].id
+        list[tileIdx[i]].geom = g
+        if (tileIdx.length >= 2) list[tileIdx[i]].lockPlace = true
+    }
+    return list
+}
+
+function chipGeomsForWorkspace(profile, workspace) {
+    var ws = parseInt(workspace, 10)
+    var list = []
+    var apps = (profile && profile.assignments) || []
+    for (var i = 0; i < apps.length; i++) {
+        if (apps[i].enabled === false) continue
+        if (Number(apps[i].workspace) === ws) list.push(apps[i])
+    }
+    if (!list.length) return [{ x: 0, y: 0, w: 0.5, h: 1 }, { x: 0.5, y: 0, w: 0.5, h: 1 }]
+    var pref = effectiveWorkspacePref(profile, ws)
+    return packedGeomsForApps(list, pref.layout, 1 / Math.max(1, pref.visibleCount))
+}
+
 function geomRight(g) { return Number(g.x) + Number(g.w) }
 function geomBottom(g) { return Number(g.y) + Number(g.h) }
 
@@ -1271,7 +1459,7 @@ function listSplits(geoms) {
     return splits
 }
 
-function nudgeSplit(geoms, split, delta) {
+function nudgeSplit(geoms, split, delta, options) {
     if (!split || !geoms || !geoms.length) return geoms
     var next = clone(geoms)
     var minD = -1
@@ -1288,7 +1476,22 @@ function nudgeSplit(geoms, split, delta) {
             g = next[bIds[i]]
             if (g) maxD = Math.min(maxD, g.w - GEOM_MIN)
         }
-        delta = Math.max(minD, Math.min(maxD, Number(delta) || 0))
+    } else {
+        for (i = 0; i < aIds.length; i++) {
+            g = next[aIds[i]]
+            if (g) minD = Math.max(minD, -(g.h - GEOM_MIN))
+        }
+        for (i = 0; i < bIds.length; i++) {
+            g = next[bIds[i]]
+            if (g) maxD = Math.min(maxD, g.h - GEOM_MIN)
+        }
+    }
+    var raw = Number(delta) || 0
+    var pos = Number(split.pos) || 0
+    var target = pos + raw
+    if (options && options.snap === true) target = snapPosition(target, true)
+    delta = Math.max(minD, Math.min(maxD, target - pos))
+    if (split.axis === "v") {
         for (i = 0; i < aIds.length; i++) {
             g = next[aIds[i]]
             if (g) g.w = round4(g.w + delta)
@@ -1303,15 +1506,6 @@ function nudgeSplit(geoms, split, delta) {
     } else {
         for (i = 0; i < aIds.length; i++) {
             g = next[aIds[i]]
-            if (g) minD = Math.max(minD, -(g.h - GEOM_MIN))
-        }
-        for (i = 0; i < bIds.length; i++) {
-            g = next[bIds[i]]
-            if (g) maxD = Math.min(maxD, g.h - GEOM_MIN)
-        }
-        delta = Math.max(minD, Math.min(maxD, Number(delta) || 0))
-        for (i = 0; i < aIds.length; i++) {
-            g = next[aIds[i]]
             if (g) g.h = round4(g.h + delta)
         }
         for (i = 0; i < bIds.length; i++) {
@@ -1323,6 +1517,28 @@ function nudgeSplit(geoms, split, delta) {
         }
     }
     return next
+}
+
+function evenSplit(geoms, split) {
+    if (!split || !geoms || !geoms.length) return geoms
+    var aIds = split.aIds || []
+    var bIds = split.bIds || []
+    if (!aIds.length || !bIds.length) return geoms
+    var minP = 1
+    var maxP = 0
+    var i, g
+    var startKey = split.axis === "v" ? "x" : "y"
+    var sizeKey = split.axis === "v" ? "w" : "h"
+    function consider(idx) {
+        g = geoms[idx]
+        if (!g) return
+        minP = Math.min(minP, Number(g[startKey]))
+        maxP = Math.max(maxP, Number(g[startKey]) + Number(g[sizeKey]))
+    }
+    for (i = 0; i < aIds.length; i++) consider(aIds[i])
+    for (i = 0; i < bIds.length; i++) consider(bIds[i])
+    var mid = (minP + maxP) / 2
+    return nudgeSplit(geoms, split, mid - (Number(split.pos) || 0))
 }
 
 function overlapLen(a0, a1, b0, b1) {

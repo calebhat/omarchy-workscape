@@ -91,7 +91,7 @@ That removes only the marked WorkScape require block from the current `hyprland.
 
 ## User manual
 
-Open the panel from the workspace chip in the bar (left click). **Middle-click** the chip to apply the matching profile without opening the panel.
+Open the panel from the workspace chip in the bar (left click) — the chip draws the focused workspace’s split. **Middle-click** the chip to apply the matching profile without opening the panel.
 
 The **header profile** is what you are editing — same idea as picking a theme in ThemeBook. Tabs: **Workspaces**, **Displays**, **Gestures**, **Profiles**.
 
@@ -147,6 +147,8 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 | Scrolling | First window fills; new windows are 1/Visible columns. Super+Left/Right pan on this workspace |
 | Master | Large pane + stack |
 
+**Split shapes** (Even, Focus 25/50/25, Main, Golden, Thirds, Wide centre, Stacked, Grid) stamp pane sizes. Two or more tiled apps also **lock** those sizes so Apply can restore them. They do not change dwindle/scrolling/master. Drag splitters to snap (Shift = free; double-click evens). Click a workspace number to edit it in the panel (Hyprland focus stays put). The bar chip is a miniature of the focused workspace.
+
 **Visible columns** (1–20) is **per scrolling workspace**. It is *not* the global overflow max.
 
 **Keep extra windows on this workspace** (on) leaves extras on this workspace. Off: extras still open, then move to the next unused workspace (assigned workspaces and leave-alone pins are skipped).
@@ -177,7 +179,7 @@ The extras watcher listens to Hyprland window events (no extra polling). A bounc
 
 **Preview and organizer**
 
-- Mini preview (right column): drag **vertical and horizontal** splitters. **×** on a pane removes that window from the workspace; the left list updates live (toggle, **+**, and **×N**). Right-click a pane to lock/unlock its size. **Expand** opens the full organizer.
+- Mini preview (right column): drag **vertical and horizontal** splitters. **🔓/🔒** on a pane (or right-click) locks its size; **×** removes it. The app list has the same lock button. **Expand** opens the full organizer.
 - **Organizer** (almost the whole panel): up to **20** panes.
   - Drag a **shared edge** to resize both tiled neighbors.
   - Drag a **tiled** pane as a whole: onto another pane’s **center** to **swap** cells; onto an **edge** to **split** that way (left/right/up/down). Dropping off a pane snaps back. Tiled panes stay in the grid (no overlapping).

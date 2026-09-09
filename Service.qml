@@ -30,7 +30,7 @@ Item {
     readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
 
     function helperRun(args, timeoutSec, maxOut) {
-        var cmd = ["python3", root.stateio, "run", "--timeout", String(timeoutSec), "--max-out", String(maxOut), "--"]
+        var cmd = ["python3", "-B", root.stateio, "run", "--timeout", String(timeoutSec), "--max-out", String(maxOut), "--"]
         return cmd.concat(args)
     }
 
@@ -112,7 +112,7 @@ Item {
 
     Process {
         id: extrasWatch
-        command: ["python3", root.pluginDir + "/scripts/watch"]
+        command: ["python3", "-B", root.pluginDir + "/scripts/watch"]
         running: false
         stdout: SplitParser {
             onRead: function(d) {

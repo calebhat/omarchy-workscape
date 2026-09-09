@@ -214,13 +214,40 @@ Item {
                             anchors.topMargin: 4
                             width: parent.width - 12
                             textFormat: Text.PlainText
-                            text: modelData ? (modelData.name || "App") : ""
+                            text: ((root.lockAll || (modelData && modelData.lockPlace)) ? "🔒 " : "") + (modelData ? (modelData.name || "App") : "")
                             color: Color.foreground
                             font.family: Style.font.family
                             font.pixelSize: Style.font.caption - 1
                             font.bold: true
                             wrapMode: Text.WordWrap
                             horizontalAlignment: Text.AlignHCenter
+                        }
+                        MouseArea {
+                            z: 4
+                            anchors.fill: parent
+                            acceptedButtons: Qt.RightButton
+                            onClicked: if (modelData && modelData.id) root.appLockToggled(modelData.id)
+                        }
+                        MouseArea {
+                            z: 6
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            width: 18
+                            height: 18
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: if (modelData && modelData.id) root.appLockToggled(modelData.id)
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 4
+                                color: Qt.rgba(0, 0, 0, parent.containsMouse ? 0.45 : 0.25)
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: (root.lockAll || (modelData && modelData.lockPlace)) ? "🔒" : "🔓"
+                                    color: Color.foreground
+                                    font.pixelSize: 10
+                                }
+                            }
                         }
                         MouseArea {
                             z: 5
@@ -299,7 +326,15 @@ Item {
                             var span = vertical ? Math.max(1, tilesContainer.width) : Math.max(1, tilesContainer.height)
                             var delta = (now - grab) / span
                             if (Math.abs(delta) > 0.002) moved = true
-                            root.liveGeoms = Model.nudgeSplit(startGeoms, startSplit, delta)
+                            root.liveGeoms = Model.nudgeSplit(startGeoms, startSplit, delta, {
+                                snap: !(mouse.modifiers & Qt.ShiftModifier)
+                            })
+                        }
+                        onDoubleClicked: {
+                            root.liveGeoms = Model.evenSplit(root.liveGeoms, modelData)
+                            root.commitLive()
+                            root.dragging = false
+                            root.refreshSplits()
                         }
                         onReleased: {
                             if (moved) root.commitLive()

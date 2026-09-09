@@ -168,6 +168,31 @@ def assignment_is_locked(assignment: dict[str, Any], prefs: dict[str, Any] | Non
     return pref.get("lockSizes") is True
 
 
+def occupied_skip(ws: str, profile: dict[str, Any] | None = None) -> bool:
+    """Skip unassigned occupied workspaces. Locked splits still restamp."""
+    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
+    if str(ws) not in occupied:
+        return False
+    if os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED") == "1":
+        return False
+    n_lock = 0
+    for a in (profile or {}).get("assignments") or []:
+        if a.get("enabled") is False:
+            continue
+        if str(a.get("workspace") or "") != str(ws):
+            continue
+        if a.get("lockPlace") is True:
+            n_lock += 1
+    if n_lock >= 2:
+        return False
+    pref = ((profile or {}).get("workspacePrefs") or {}).get(str(ws)) or {}
+    if not isinstance(pref, dict):
+        pref = {}
+    if pref.get("lockSizes") is True and n_lock >= 1:
+        return False
+    return True
+
+
 def lock_plan_for_workspace(profile: dict[str, Any], ws: str) -> dict[str, Any]:
     """Apply-time geoms for assigned windows. Does not drive a live tape."""
     prefs = profile.get("workspacePrefs") or {}
@@ -1817,8 +1842,7 @@ def restore_locks_for_workspace(
     profile = active_profile(cfg, profile_id)
     if not profile:
         return {"ok": False, "error": "no profile"}
-    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
-    if str(ws) in occupied and os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED") != "1":
+    if occupied_skip(str(ws), profile):
         return {"ok": True, "skipped": True, "workspace": str(ws), "reason": "occupied"}
     plan = lock_plan_for_workspace(profile, str(ws))
     locked = plan["locked"]
@@ -1934,6 +1958,8 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
     base = exec_cmd.split()[0].split("/")[-1].lower() if exec_cmd else ""
     name = str(assignment.get("name") or "").lower()
     app_id = exec_app_id(exec_cmd)
+    want_cls = str(assignment.get("class") or assignment.get("windowClass") or "").lower()
+    want_title = str(assignment.get("title") or "").lower()
     best = None
     best_score = 0
     for c in clients:
@@ -1945,6 +1971,10 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
         initial = str(c.get("initialClass") or "").lower()
         initial_title = str(c.get("initialTitle") or "").lower()
         score = 0
+        if want_cls and (want_cls == cls or want_cls == initial or want_cls in cls or cls in want_cls):
+            score += 16
+        if want_title and (want_title == title or want_title in title or want_title in initial_title):
+            score += 10
         if app_id and (app_id == cls or app_id == initial or app_id in cls):
             score += 14
         if "herdr" in exec_cmd.lower() and "herdr" in cls:
@@ -2006,7 +2036,6 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         return {"ok": False, "error": "no profile"}
     cache_clear()
     clients = hypr_j("clients")
-    occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
     prefs = profile.get("workspacePrefs") or {}
     by_ws: dict[str, list[dict[str, Any]]] = {}
     used: set[str] = set()
@@ -2018,7 +2047,7 @@ def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
         if not geom and not locked:
             continue
         ws = str(a.get("workspace") or "1")
-        if ws in occupied and os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED") != "1":
+        if occupied_skip(ws, profile):
             continue
         on_ws = [
             c for c in clients

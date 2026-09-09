@@ -369,7 +369,15 @@ Item {
                         var span = vertical ? Math.max(1, board.width) : Math.max(1, board.height)
                         var delta = (now - grab) / span
                         if (Math.abs(delta) > 0.002) moved = true
-                        root.liveGeoms = Model.nudgeSplit(startGeoms, startSplit, delta)
+                        root.liveGeoms = Model.nudgeSplit(startGeoms, startSplit, delta, {
+                            snap: !(mouse.modifiers & Qt.ShiftModifier)
+                        })
+                    }
+                    onDoubleClicked: {
+                        root.liveGeoms = Model.evenSplit(root.liveGeoms, modelData)
+                        root.commitLive()
+                        root.dragging = false
+                        root.refreshSplits()
                     }
                     onReleased: {
                         if (moved) root.commitLive()

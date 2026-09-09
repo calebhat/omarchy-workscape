@@ -1,8 +1,10 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
+import "Model.js" as Model
 
 BarWidget {
     id: root
@@ -31,6 +33,15 @@ BarWidget {
     property bool pluginEnabled: true
     property string lastError: ""
     property bool pendingOpen: false
+    property string configText: ""
+
+    readonly property var barConfig: {
+        var j = Model.parseCappedJson(root.configText)
+        return j ? Model.sanitizeConfig(j) : Model.defaultConfig()
+    }
+    readonly property int focusedWorkspaceId: Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id : 1
+    readonly property var focusedProfile: Model.profileById(barConfig, barConfig.settings && barConfig.settings.activeProfileId) || Model.defaultProfile()
+    readonly property var chipGeoms: Model.chipGeomsForWorkspace(focusedProfile, focusedWorkspaceId)
 
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
     readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
@@ -65,7 +76,7 @@ BarWidget {
 
     function applyMatching() {
         if (applyProc.running) return
-        applyProc.command = ["python3", root.stateio, "run", "--timeout", "180", "--max-out", "65536", "--", "bash", root.script, "--apply-matching"]
+        applyProc.command = ["python3", "-B", root.stateio, "run", "--timeout", "180", "--max-out", "65536", "--", "bash", root.script, "--apply-matching"]
         applyProc.running = true
     }
 
@@ -74,7 +85,7 @@ BarWidget {
 
     Process {
         id: statusProc
-        command: ["python3", root.stateio, "run", "--timeout", "5", "--max-out", "8192", "--", "bash", root.script, "--status"]
+        command: ["python3", "-B", root.stateio, "run", "--timeout", "5", "--max-out", "8192", "--", "bash", root.script, "--status"]
         stdout: StdioCollector { id: statusOut; waitForEnd: true }
         onExited: function(code){
             try {
@@ -87,6 +98,24 @@ BarWidget {
                 root.pluginEnabled = j.pluginEnabled !== false
             } catch (e) {}
         }
+    }
+
+    FileView {
+        id: configView
+        path: root.configFile
+        watchChanges: true
+        printErrors: false
+        onLoaded: {
+            try { root.configText = text() } catch (e) { root.configText = "" }
+        }
+        onLoadFailed: root.configText = ""
+        onFileChanged: reload()
+    }
+    Timer {
+        interval: 1500
+        running: root.configText === ""
+        repeat: true
+        onTriggered: configView.reload()
     }
 
     Process {
@@ -136,11 +165,22 @@ BarWidget {
         id: button
         anchors.fill: parent
         bar: root.bar
-        text: "󱂬"
         slotSize: Style.bar.statusSlot
         tooltipText: root.pluginEnabled
-            ? ("WorkScape • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching (Fresh is in the panel)")
+            ? ("WorkScape • WS " + root.focusedWorkspaceId + " • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
             : "WorkScape • disabled • click to enable"
+        iconComponent: Component {
+            Item {
+                LayoutThumb {
+                    anchors.centerIn: parent
+                    width: Math.round(parent.width)
+                    height: Math.round(parent.width * 0.68)
+                    geoms: root.chipGeoms
+                    stroke: button.foreground
+                    strength: root.opened ? 1.0 : 0.7
+                }
+            }
+        }
         onPressed: function(btn){
             if (btn === Qt.LeftButton) root.toggle()
             else if (btn === Qt.MiddleButton) root.applyMatching()

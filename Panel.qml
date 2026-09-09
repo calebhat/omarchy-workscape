@@ -31,7 +31,7 @@ Panel {
     readonly property string stateio: root.pluginDir + "/scripts/stateio"
 
     function helperRun(args, timeoutSec, maxOut) {
-        var cmd = ["python3", root.stateio, "run", "--timeout", String(timeoutSec), "--max-out", String(maxOut), "--"]
+        var cmd = ["python3", "-B", root.stateio, "run", "--timeout", String(timeoutSec), "--max-out", String(maxOut), "--"]
         return cmd.concat(args)
     }
 
@@ -243,7 +243,7 @@ Panel {
             return
         }
         if (saveProc.running) { saveProc.wantsSave = true; return }
-        saveProc.command = ["python3", root.stateio, "write-config"]
+        saveProc.command = ["python3", "-B", root.stateio, "write-config"]
         saveProc.stdinEnabled = true
         saveProc.running = true
     }
@@ -351,6 +351,33 @@ Panel {
         workspacePicked = true
         persistWsTimer.restart()
         syncMonitorDropdown()
+    }
+    function applyWorkspaceShape(shapeId) {
+        var apps = root.addedApps || []
+        var tiled = 0
+        for (var i = 0; i < apps.length; i++) if (apps[i].place !== "float") tiled++
+        if (!tiled) {
+            root.errorText = "Add a tiled app before picking a split shape"
+            return
+        }
+        var packed = Model.applyShapeToApps(apps, shapeId)
+        var byId = {}
+        for (var t = 0; t < packed.length; t++) if (packed[t] && packed[t].id) byId[packed[t].id] = packed[t]
+        var next = []
+        for (var a = 0; a < assignments.length; a++) {
+            var item = Model.clone(assignments[a])
+            var src = byId[item.id]
+            if (src) {
+                if (src.geom) item.geom = src.geom
+                if (src.lockPlace === true) item.lockPlace = true
+            }
+            next.push(item)
+        }
+        assignments = next
+        saveConfig()
+        var shape = Model.findShape(shapeId)
+        root.statusText = shape ? (shape.name + " · " + Model.describeShape(shape)) : "Applied split shape"
+        clearStatusTimer.restart()
     }
     function setWorkspaceMonitor(monitorId) {
         monitorId = String(monitorId || "")
@@ -1264,7 +1291,7 @@ Panel {
             else root.errorText = ""
             if (saveProc.wantsSave) {
                 saveProc.wantsSave = false
-                saveProc.command = ["python3", root.stateio, "write-config"]
+                saveProc.command = ["python3", "-B", root.stateio, "write-config"]
                 saveProc.stdinEnabled = true
                 saveProc.running = true
             } else if (code === 0) {
@@ -1641,6 +1668,34 @@ Panel {
                                 }
                             }
                         }
+                        Text {
+                            visible: root.addedApps.length > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            textFormat: Text.PlainText
+                            text: "Split shapes stamp pane sizes (and lock them when two or more). Does not change dwindle/scrolling/master."
+                            color: root.dim
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.caption - 1
+                        }
+                        GridLayout {
+                            visible: root.addedApps.length > 0
+                            Layout.fillWidth: true
+                            columns: 3
+                            columnSpacing: Style.space(4)
+                            rowSpacing: Style.space(4)
+                            Repeater {
+                                model: Model.shapePresets()
+                                delegate: Button {
+                                    required property var modelData
+                                    text: modelData.name
+                                    tooltipText: Model.describeShape(modelData)
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Style.space(28)
+                                    onClicked: root.applyWorkspaceShape(modelData.id)
+                                }
+                            }
+                        }
                         RowLayout {
                             visible: root.currentWsUi.showVisibleCount
                             Layout.fillWidth: true
@@ -1799,6 +1854,7 @@ Panel {
                                     selected: root.workspacePicked && root.formWorkspace === (index + 1)
                                     horizontalPadding: 0
                                     verticalPadding: 0
+                                    tooltipText: "Edit WS " + (index + 1)
                                     onClicked: root.selectWorkspace(index + 1)
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: Style.space(30)
@@ -1888,7 +1944,7 @@ Panel {
                         SectionCard {
                             title: "PREVIEW · " + root.activeProfile.name
                             hint: root.addedApps.length > 1
-                                ? "Drag the bar between panes. Apply keeps them tiled so later resize still moves both."
+                                ? "Drag splitters (snap; Shift free; double-click evens). 🔓 locks pane size. Apply keeps locked widths."
                                 : (root.addedApps.length === 1 ? "Add another app to split this workspace." : "Toggle apps in the list to place them on this workspace.")
                             foreground: root.foreground
                             fontFamily: root.fontFamily
@@ -3159,6 +3215,17 @@ Panel {
                 }
             }
 
+            Button {
+                visible: app ? root.countInWorkspace(app.exec) > 0 : false
+                Layout.preferredWidth: Style.space(36)
+                Layout.minimumWidth: Style.space(36)
+                Layout.maximumWidth: Style.space(40)
+                Layout.fillWidth: false
+                Layout.alignment: Qt.AlignVCenter
+                text: app && root.isAppLocked(app.exec) ? "🔒" : "🔓"
+                tooltipText: "Lock this window’s size on this workspace"
+                onClicked: if (app) root.toggleAppLock(app.exec)
+            }
             Button {
                 visible: app ? root.countInWorkspace(app.exec) > 0 : false
                 Layout.preferredWidth: Style.space(36)

@@ -156,6 +156,12 @@ def unlink_state(name: str) -> None:
         os.close(dirfd)
 
 
+def helper_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
 def isolate_apply(argv: list[str], timeout: float) -> int:
     dirfd = SAFE.open_state_dir(create=True)
     lockfd = SAFE.try_lock(dirfd)
@@ -177,7 +183,7 @@ def isolate_apply(argv: list[str], timeout: float) -> int:
             dir_fd=dirfd,
         )
         SAFE._fstat_reg(logfd)
-        env = os.environ.copy()
+        env = helper_env()
         env["WORKSCAPE_APPLY_ISOLATED"] = "1"
         env["WORKSCAPE_APPLY_LOCKED"] = "1"
         env["WORKSCAPE_APPLY_DETACHED"] = "1"
@@ -282,6 +288,7 @@ def run_helper(argv: list[str], timeout: float, max_out: int) -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
+        env=helper_env(),
         start_new_session=True,
         preexec_fn=SAFE._pdeathsig,
     )

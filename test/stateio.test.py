@@ -27,6 +27,12 @@ def run(env, args, stdin=b"", timeout=8):
     return proc
 
 
+def test_helper_env_disables_bytecode():
+    sio = SourceFileLoader("stateio", str(STATEIO)).load_module()
+    env = sio.helper_env()
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
 def test_write_read_roundtrip(tmp: Path):
     env = os.environ.copy()
     env["WORKSCAPE_STATE_DIR"] = str(tmp)
@@ -237,6 +243,7 @@ if __name__ == "__main__":
         base = Path(d)
         for name in list("abcdefghijklmn"):
             (base / name).mkdir()
+        test_helper_env_disables_bytecode()
         test_write_read_roundtrip(base / "a")
         test_symlink_config_rejected(base / "b")
         test_fifo_config_rejected(base / "c")

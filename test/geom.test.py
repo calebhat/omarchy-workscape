@@ -1028,6 +1028,63 @@ def test_apply_config_occupied_stage_still_fills():
             geom.os.environ["WORKSCAPE_MIGRATE_OCCUPIED"] = orig_mig
 
 
+def test_match_saved_class_when_exec_is_generic_foot():
+    herdr = {
+        "address": "0x1",
+        "class": "org.omarchy.herdr",
+        "title": "session",
+        "initialClass": "org.omarchy.herdr",
+    }
+    panel = {
+        "address": "0x2",
+        "class": "org.quickshell",
+        "title": "Shophawk Control",
+        "initialClass": "org.quickshell",
+    }
+    used: set[str] = set()
+    a = geom.match_client(
+        {"name": "omarchyhome: desk-a", "exec": "foot", "class": "org.omarchy.herdr", "title": "omarchyhome: desk-a"},
+        [herdr, panel],
+        used,
+    )
+    assert a and a["address"] == "0x1", a
+    used.add("0x1")
+    b = geom.match_client(
+        {"name": "Shophawk Control", "exec": "qs", "class": "org.quickshell"},
+        [herdr, panel],
+        used,
+    )
+    assert b and b["address"] == "0x2", b
+
+
+def test_occupied_skip_allows_two_lock_split():
+    profile = {
+        "assignments": [
+            {"workspace": 2, "exec": "herdr", "lockPlace": True, "geom": {"x": 0, "y": 0, "w": 0.72, "h": 1}},
+            {"workspace": 2, "exec": "qs", "lockPlace": True, "geom": {"x": 0.72, "y": 0, "w": 0.28, "h": 1}},
+        ],
+        "workspacePrefs": {"2": {"layout": "dwindle", "extras": "block"}},
+    }
+    orig_env = geom.os.environ.get("WORKSCAPE_OCCUPIED_WS")
+    orig_mig = geom.os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED")
+    geom.os.environ["WORKSCAPE_OCCUPIED_WS"] = "2"
+    geom.os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
+    try:
+        assert geom.occupied_skip("2", profile) is False
+        assert geom.occupied_skip("3", {"assignments": [], "workspacePrefs": {}}) is False
+        geom.os.environ["WORKSCAPE_OCCUPIED_WS"] = "3"
+        assert geom.occupied_skip("3", {"assignments": [], "workspacePrefs": {}}) is True
+    finally:
+        if orig_env is None:
+            geom.os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
+        else:
+            geom.os.environ["WORKSCAPE_OCCUPIED_WS"] = orig_env
+        if orig_mig is None:
+            geom.os.environ.pop("WORKSCAPE_MIGRATE_OCCUPIED", None)
+        else:
+            geom.os.environ["WORKSCAPE_MIGRATE_OCCUPIED"] = orig_mig
+
+
 def test_restore_locks_occupied_skips_unless_migrate():
     orig_env = geom.os.environ.get("WORKSCAPE_OCCUPIED_WS")
     orig_mig = geom.os.environ.get("WORKSCAPE_MIGRATE_OCCUPIED")
@@ -1545,6 +1602,8 @@ if __name__ == "__main__":
     test_apply_config_skips_occupied()
     test_apply_config_migrates_occupied_on_profile_change()
     test_restore_locks_occupied_skips_unless_migrate()
+    test_occupied_skip_allows_two_lock_split()
+    test_match_saved_class_when_exec_is_generic_foot()
     test_apply_items_scrolling_vs_stacked_rows()
     test_geom_pixels_master_stack()
     test_match_app_id_when_title_is_shell_prompt()
