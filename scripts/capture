@@ -116,9 +116,26 @@ def url_from_client(c: dict) -> str:
     return ""
 
 
+def _home_bin(name: str) -> str:
+    p = Path.home() / ".local" / "bin" / name
+    if p.is_file():
+        return str(p)
+    return name
+
+
 def exec_for_client(c: dict, url: str, cwd: str) -> str:
     cls = str(c.get("class") or "")
+    title = str(c.get("title") or "")
+    hay = f"{cls} {title}".lower()
     cmd = proc_cmd(int(c.get("pid") or 0)) if c.get("pid") else ""
+    # Herdr runs inside foot with --app-id. The parent cmdline is `foot`, which
+    # must not become the launch command or Fresh opens a blank terminal.
+    if "herdr" in hay or cls.startswith("org.omarchy.herdr"):
+        if "shophawk" in hay or "omarchyhome" in hay:
+            return _home_bin("herdr-shophawk")
+        return "omarchy-launch-or-focus-tui --app-id=org.omarchy.herdr herdr"
+    if cls in {"org.quickshell", "quickshell"} and "shophawk" in hay and "herdr" not in hay:
+        return _home_bin("shophawk-panel")
     if cls.startswith("foot") or cls == "foot":
         return "foot"
     if "ghostty" in cls:
@@ -129,6 +146,9 @@ def exec_for_client(c: dict, url: str, cwd: str) -> str:
         return "brave"
     first = cmd.split()[0] if cmd else ""
     if first.startswith("/") and os.path.isfile(first):
+        base = os.path.basename(first)
+        if base in {"foot", "foot-client", "ghostty"} and cls not in {"foot", "com.mitchellh.ghostty"}:
+            return cls or first
         return first
     return first or cls
 

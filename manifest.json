@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.calebhat.workscape",
   "name": "WorkScape",
-  "version": "1.10.3",
+  "version": "1.10.5",
   "author": "calebhat",
   "license": "MIT",
   "description": "Monitor and workspace management suite: display profiles, workspace-to-monitor pins, window presets, overflow automation, and optional login apply.",

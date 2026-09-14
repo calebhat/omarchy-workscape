@@ -422,13 +422,22 @@ def exec_silent(cmd: str, ws: str, monitor: str = "") -> str:
     return lua
 
 
-def pin_workspace_silent(ws: str, monitor: str) -> None:
-    """Bind a workspace to a monitor without focusing either."""
+def pin_workspace_silent(ws: str, monitor: str, layout: str = "") -> None:
+    """Bind a workspace to a monitor without focusing either.
+
+    Always send layout when we know it. A monitor-only rule replaces the
+    previous rule and Hyprland falls back to scrolling, which equal-splits
+    locked panes.
+    """
     ws = SAFE.safe_ws(ws)
     mon = SAFE.safe_connector(monitor)
     if not ws or not mon:
         return
-    hypr_eval(f'hl.workspace_rule({{ workspace = "{ws}", monitor = "{mon}" }})')
+    layout = layout if layout in ("dwindle", "scrolling", "master") else ""
+    extra = f', layout = "{layout}"' if layout else ""
+    hypr_eval(
+        f'hl.workspace_rule({{ workspace = "{ws}", monitor = "{mon}", persistent = false{extra} }})'
+    )
     hypr_eval(
         f'hl.dispatch(hl.dsp.workspace.move({{ workspace = "{ws}", monitor = "{mon}" }}))'
     )
@@ -1872,6 +1881,11 @@ def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "")
     locked = plan["locked"]
     n_lock = len(locked)
     layout = str(plan.get("layout") or "dwindle")
+    locked_geoms = [a for a in locked if a.get("geom")]
+    # Two locked panes are a split: dwindle + pixel sizes. Scrolling would
+    # ignore those geoms and show equal columns (visibleCount 2 → 50/50).
+    if len(locked_geoms) >= 2:
+        layout = "dwindle"
     use_scrolling = layout == "scrolling"
     if use_scrolling:
         force_scrolling(ws, plan["visibleCount"])
@@ -1883,6 +1897,7 @@ def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "")
         )
     else:
         force_dwindle(ws)
+    time.sleep(0.05)
     cache_clear()
     monitors = hypr_j("monitors", cached=True)
     workspaces = hypr_j("workspaces", cached=True)
@@ -1890,8 +1905,13 @@ def _settle_workspace_once(ws: str, plan: dict[str, Any], prefer_addr: str = "")
     if not mon:
         return {"ok": False, "error": "no monitor", "workspace": ws}
     metrics = layout_metrics(mon)
-    if use_scrolling or layout == "master":
+    if (use_scrolling or layout == "master") and len(locked_geoms) < 2:
         return {"ok": True, "workspace": ws, "closeEnough": True, "mode": layout, "windows": []}
+    if workspace_is_scrolling(ws, workspaces) and layout == "dwindle":
+        force_dwindle(ws)
+        time.sleep(0.05)
+        cache_clear()
+        workspaces = hypr_j("workspaces", cached=True)
     clients = clients_on_workspace(ws)
     used: set[str] = set()
     items: list[dict[str, Any]] = []

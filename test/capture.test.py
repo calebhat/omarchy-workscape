@@ -100,8 +100,31 @@ def test_capture_ws2_keeps_uneven_split():
     assert right["geom"]["w"] < 0.3
     assert left["lockPlace"] is True
     assert right["lockPlace"] is True
+    assert "herdr-shophawk" in left["exec"]
+    assert "shophawk-panel" in right["exec"]
+    assert left["exec"] != "foot"
+    assert right["exec"] != "qs"
     # Old bug: measure against eDP-1 (logical 1440) → herdr clamps to full width.
     assert left["geom"]["w"] != 1
+
+
+def test_exec_for_herdr_not_parent_foot():
+    home = str(Path.home() / ".local/bin/herdr-shophawk")
+    got = cap.exec_for_client(
+        {"class": "org.omarchy.herdr", "title": "omarchyhome: desk-a", "pid": 0},
+        "",
+        "",
+    )
+    assert "herdr" in got
+    assert got != "foot"
+    panel = cap.exec_for_client(
+        {"class": "org.quickshell", "title": "Shophawk Control", "pid": 0},
+        "",
+        "",
+    )
+    assert "shophawk-panel" in panel
+    assert panel != "qs"
+    _ = home
 
 
 def test_tessellate_columns():
@@ -118,5 +141,6 @@ def test_tessellate_columns():
 
 if __name__ == "__main__":
     test_capture_ws2_keeps_uneven_split()
+    test_exec_for_herdr_not_parent_foot()
     test_tessellate_columns()
     print("capture.test.py ok")

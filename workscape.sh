@@ -183,8 +183,24 @@ bind_workspace_to_monitor() {
   [[ $ws =~ ^[0-9]+$ ]] || return 0
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 0
   [[ $name != *HEADLESS* ]] || return 0
-  # Persistent rule only for workspaces the profile actually pins.
-  hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = true })' "$ws" "$name")" >/dev/null 2>&1 || true
+  local layout
+  layout=$(jq_config -r --arg ws "$ws" '
+    .settings.activeProfileId as $id
+    | (.profiles[] | select(.id==$id) | .workspacePrefs[$ws].layout) // "dwindle"
+  ' 2>/dev/null || echo dwindle)
+  local locks
+  locks=$(jq_config -r --arg ws "$ws" '
+    .settings.activeProfileId as $id
+    | [.profiles[] | select(.id==$id) | .assignments[]? | select((.workspace|tostring)==$ws and .lockPlace==true)] | length
+  ' 2>/dev/null || echo 0)
+  if [[ $locks =~ ^[0-9]+$ ]] && (( locks >= 2 )); then
+    layout=dwindle
+  fi
+  case "$layout" in
+    dwindle|scrolling|master) ;;
+    *) layout=dwindle ;;
+  esac
+  hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = true, layout = "%s" })' "$ws" "$name" "$layout")" >/dev/null 2>&1 || true
   move_workspace_to_monitor "$ws" "$name"
   echo "bound workspace $ws → $name"
 }
@@ -430,6 +446,19 @@ cmd_launch() {
   # hl.exec_cmd does not honor Hyprland's "[workspace N silent]" exec prefix —
   # that string is run as a command. Focus the target workspace, then exec.
   local final_cmd="$exec_cmd"
+  local name_lc="${app_name,,}"
+  # Capture used to store the terminal/qs parent instead of the real launcher.
+  if [[ $exec_cmd == "qs" || $exec_cmd == */qs ]]; then
+    if [[ $name_lc == *shophawk* ]]; then
+      exec_cmd="${HOME}/.local/bin/shophawk-panel"
+      final_cmd="$exec_cmd"
+    fi
+  elif [[ $exec_cmd == "foot" || $exec_cmd == foot\ * ]]; then
+    if [[ $name_lc == *herdr* || $name_lc == *omarchyhome* ]]; then
+      exec_cmd="${HOME}/.local/bin/herdr-shophawk"
+      final_cmd="$exec_cmd"
+    fi
+  fi
   # outlook-mail focuses an existing Brave tab titled Outlook (often the
   # WS1 browser after session restore) and never creates a WS4 window.
   if [[ $exec_cmd == *outlook-mail* ]]; then
@@ -523,7 +552,12 @@ cmd_launch() {
   # Pin the workspace to its monitor without focusing it. Empty workspaces
   # follow the focused monitor (I-012); a workspace_rule + move is enough.
   if [[ -n $target_mon && $target_mon =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ && $target_mon != *HEADLESS* ]]; then
-    timeout 2 hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s" })' "$workspace" "$target_mon")" </dev/null >/dev/null 2>&1 || true
+    local pin_layout="${9:-dwindle}"
+    case "$pin_layout" in
+      dwindle|scrolling|master) ;;
+      *) pin_layout=dwindle ;;
+    esac
+    timeout 2 hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = false, layout = "%s" })' "$workspace" "$target_mon" "$pin_layout")" </dev/null >/dev/null 2>&1 || true
     timeout 2 hyprctl eval "$(printf 'hl.dispatch(hl.dsp.workspace.move({ workspace = "%s", monitor = "%s" }))' "$workspace" "$target_mon")" </dev/null >/dev/null 2>&1 || true
   fi
 
@@ -679,6 +713,12 @@ find_existing_addr() {
     def hit:
       if $host != "" then
         (hay | contains($host)) and on_target
+      elif ($name | test("herdr|omarchyhome") or ($exec | contains("herdr"))) then
+        (cls | test("herdr")) and on_target
+      elif ($name | test("shophawk")) and ($name | test("herdr") | not) then
+        (hay | contains("shophawk")) and (hay | contains("herdr") | not) and on_target
+      elif ($n == "qs" or $n == "quickshell" or ($exec | contains("shophawk-panel"))) then
+        cls == "org.quickshell" and (hay | contains("shophawk")) and (hay | contains("herdr") | not) and on_target
       elif ($n == "outlook-mail" or $name == "outlook") then
         (cls | test("outlook")) and on_target
       elif ($n == "foot" or $n == "ghostty") then
@@ -881,7 +921,18 @@ launch_profile_assignments() {
     cwd=$(echo "$item" | jq -r '.cwd // empty')
     url=$(echo "$item" | jq -r '.url // empty')
     # hyprctl reads stdin — must not steal the assignment stream
-    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" "$ws_mon" </dev/null; then
+    local ws_layout
+    ws_layout=$(jq_config -r --arg id "$profile_id" --arg ws "$ws" '
+      (.profiles[] | select(.id==$id) | .workspacePrefs[$ws].layout) // "dwindle"
+    ' 2>/dev/null || echo dwindle)
+    local lock_n
+    lock_n=$(jq_config -r --arg id "$profile_id" --arg ws "$ws" '
+      [.profiles[] | select(.id==$id) | .assignments[]? | select((.workspace|tostring)==$ws and .lockPlace==true)] | length
+    ' 2>/dev/null || echo 0)
+    if [[ $lock_n =~ ^[0-9]+$ ]] && (( lock_n >= 2 )); then
+      ws_layout=dwindle
+    fi
+    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" "$ws_mon" "$ws_layout" </dev/null; then
       echo "$(date -u) OK ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
     else
       echo "$(date -u) FAIL ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true

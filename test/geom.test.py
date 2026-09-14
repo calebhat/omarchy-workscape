@@ -1560,10 +1560,11 @@ def test_pin_workspace_silent_does_not_focus():
     orig = geom.hypr_eval
     geom.hypr_eval = lambda lua: calls.append(lua)
     try:
-        geom.pin_workspace_silent("12", "DVI-I-2")
+        geom.pin_workspace_silent("12", "DVI-I-2", "dwindle")
         joined = "\n".join(calls)
         assert "workspace.move" in joined
         assert "dsp.focus" not in joined
+        assert "layout = \"dwindle\"" in joined
     finally:
         geom.hypr_eval = orig
 
