@@ -149,6 +149,17 @@ def last_fingers_path() -> Path:
     return Path(state) / "omarchy/workscape/last-swipe-fingers"
 
 
+def keyboard_claim_path() -> Path:
+    """Marks that we took SUPER+,/. off whatever had them.
+
+    SUPER+comma is Omarchy's dismiss-notification bind, so the keys are only
+    released when we are the ones holding them — never on behalf of a user who
+    has this switched off.
+    """
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    return Path(state) / "omarchy/workscape/keyboard-binds-claimed"
+
+
 REQUIRE_LINE = 'pcall(require, "hypr.workscape-gestures")'
 REQUIRE_MARK = "-- WorkScape trackpad workspace swipe (generated file)."
 HOTKEYS_LINE = 'pcall(require, "hypr.workscape-hotkeys")'
@@ -379,6 +390,32 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
         record_owned_bytes(hypr_dest.name, payload)
         ensure_hyprland_require(hypr_dest.parent)
     hypr_eval(config_lua_eval(g))
+    # Register the workspace keybinds live, the way the swipe gesture below is.
+    # The generated file only reaches Hyprland when the user opts into
+    # persisting it, so binding through the file alone left SUPER+,/. on
+    # whatever they were bound to in the default configuration.
+    claim = keyboard_claim_path()
+    claimed = claim.exists()
+    if g["keyboard"]:
+        sel = "e" if g["skipEmpty"] else "r"
+        hypr_eval('pcall(function() hl.unbind("SUPER + comma") end)')
+        hypr_eval('pcall(function() hl.unbind("SUPER + period") end)')
+        hypr_eval(
+            f'o.bind("SUPER + comma", "Previous workspace", hl.dsp.focus({{ workspace = "{sel}-1" }}))'
+        )
+        hypr_eval(
+            f'o.bind("SUPER + period", "Next workspace", hl.dsp.focus({{ workspace = "{sel}+1" }}))'
+        )
+        SAFE.write_atomic(claim, "1", mode=0o600)
+    elif claimed:
+        # Hand the keys back. Hyprland cannot restore what held them before, so
+        # they stay free until the next reload rereads the user's config.
+        hypr_eval('pcall(function() hl.unbind("SUPER + comma") end)')
+        hypr_eval('pcall(function() hl.unbind("SUPER + period") end)')
+        try:
+            SAFE.unlink_nofollow(claim)
+        except Exception:
+            pass
     prev = 0
     stamp = last_fingers_path()
     try:
@@ -399,9 +436,9 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
             SAFE.unlink_nofollow(stamp)
         except Exception:
             pass
-    # Reload only when keybinds change; a full reload remounts the panel and
-    # makes Gestures options vanish.
-    if reload and g["keyboard"]:
+    # Keybinds are applied above without a reload; a full reload remounts the
+    # panel and makes the Gestures options vanish, so it is left to the caller.
+    if reload:
         SAFE.bounded_run(["hyprctl", "reload"], timeout=8.0)
     return {"ok": True, "path": str(dest), "gestures": g}
 
