@@ -2049,11 +2049,48 @@ def match_client(assignment: dict[str, Any], clients: list[dict[str, Any]], used
     return best if best_score > 0 else None
 
 
-def apply_config(config_path: str, profile_id: str = "") -> dict[str, Any]:
+def remap_profile_workspace(profile: dict[str, Any], src: str, dest: str) -> dict[str, Any]:
+    """Copy source workspace assignments/prefs onto dest. No monitor pins."""
+    src_s = SAFE.safe_ws(src)
+    dest_s = SAFE.safe_ws(dest)
+    if not src_s or not dest_s:
+        return profile
+    out = json.loads(json.dumps(profile))
+    mapped: list[dict[str, Any]] = []
+    for a in out.get("assignments") or []:
+        if not isinstance(a, dict) or a.get("enabled") is False:
+            continue
+        if str(a.get("workspace") or "") != src_s:
+            continue
+        item = dict(a)
+        try:
+            item["workspace"] = int(dest_s)
+        except ValueError:
+            item["workspace"] = dest_s
+        mapped.append(item)
+    out["assignments"] = mapped
+    prefs = out.get("workspacePrefs") if isinstance(out.get("workspacePrefs"), dict) else {}
+    if src_s in prefs:
+        prefs[dest_s] = json.loads(json.dumps(prefs[src_s]))
+    out["workspacePrefs"] = prefs
+    out["workspaceMonitors"] = {}
+    return out
+
+
+def apply_config(config_path: str, profile_id: str = "", remap: str = "") -> dict[str, Any]:
     cfg = load_config(config_path)
     profile = active_profile(cfg, profile_id)
     if not profile:
         return {"ok": False, "error": "no profile"}
+    if remap and ":" in remap:
+        src, dest = remap.split(":", 1)
+        profile = remap_profile_workspace(profile, src, dest)
+        profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), list) else []
+        for i, p in enumerate(profiles):
+            if isinstance(p, dict) and p.get("id") == profile.get("id"):
+                profiles[i] = profile
+                break
+        cfg["profiles"] = profiles
     cache_clear()
     clients = hypr_j("clients")
     prefs = profile.get("workspacePrefs") or {}
@@ -2179,6 +2216,7 @@ def main() -> int:
     parser.add_argument("--clear-size-locks", action="store_true")
     parser.add_argument("--exec-silent", default="")
     parser.add_argument("--monitor", default="")
+    parser.add_argument("--remap", default="")
     args = parser.parse_args()
     if args.clear_size_locks:
         n = clear_all_size_locks()
@@ -2200,7 +2238,7 @@ def main() -> int:
         print(json.dumps(result))
         return 0 if result.get("ok") else 1
     if args.apply_config:
-        result = apply_config(args.config, args.profile_id)
+        result = apply_config(args.config, args.profile_id, remap=args.remap)
         print(json.dumps(result))
         return 0 if result.get("ok") else 1
     if args.apply_many:

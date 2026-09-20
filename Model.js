@@ -18,7 +18,8 @@ function defaultConfig() {
             activeProfileId: "default",
             gestureSource: "global",
             persistHyprGestures: false,
-            gestures: defaultGestures()
+            gestures: defaultGestures(),
+            hotkeys: defaultHotkeys()
         },
         monitors: [],
         extraApps: [],
@@ -452,6 +453,175 @@ function normalizeGestures(raw) {
     out.scratchpadSwipe = src.scratchpadSwipe === true
     out.scratchpadFingers = parseInt(src.scratchpadFingers, 10) === 3 ? 3 : 4
     return out
+}
+
+function defaultHotkeys() {
+    return { applyMatching: "", applyFresh: "", workspaces: {} }
+}
+
+function hotkeyKeyNames() {
+    return {
+        RETURN: true, SPACE: true, TAB: true, ESCAPE: true,
+        LEFT: true, RIGHT: true, UP: true, DOWN: true,
+        HOME: true, END: true, INSERT: true, DELETE: true, BACKSPACE: true,
+        PAGE_UP: true, PAGE_DOWN: true, PRINT: true,
+        comma: true, period: true, minus: true, equal: true, slash: true,
+        semicolon: true, apostrophe: true, backslash: true, grave: true,
+        bracketleft: true, bracketright: true
+    }
+}
+
+function canonicalHotkeyToken(raw) {
+    var t = String(raw || "").trim()
+    if (!t || t.length > 24) return ""
+    if (/[\x00-\x1f"\\;\n\r]/.test(t)) return ""
+    var u = t.toUpperCase()
+    if (u === "CONTROL" || u === "CTRL" || u === "CONTROL_L" || u === "CONTROL_R") return "CTRL"
+    if (u === "SUPER" || u === "META" || u === "SUPER_L" || u === "SUPER_R" || u === "MOD4") return "SUPER"
+    if (u === "ALT" || u === "ALT_L" || u === "ALT_R" || u === "MOD1") return "ALT"
+    if (u === "SHIFT" || u === "SHIFT_L" || u === "SHIFT_R") return "SHIFT"
+    if (u === "ENTER" || u === "RETURN" || u === "KP_ENTER") return "RETURN"
+    if (u === "ESC" || u === "ESCAPE") return "ESCAPE"
+    if (u === "PGUP" || u === "PAGEUP" || u === "PAGE_UP" || u === "PRIOR") return "PAGE_UP"
+    if (u === "PGDN" || u === "PAGEDOWN" || u === "PAGE_DOWN" || u === "NEXT") return "PAGE_DOWN"
+    if (u === "COMMA" || t === ",") return "comma"
+    if (u === "PERIOD" || t === ".") return "period"
+    if (u === "MINUS" || t === "-") return "minus"
+    if (u === "EQUAL" || t === "=" || u === "PLUS") return "equal"
+    if (u === "SLASH" || t === "/") return "slash"
+    if (u === "SEMICOLON" || t === ";") return "semicolon"
+    if (u === "APOSTROPHE" || t === "'") return "apostrophe"
+    if (u === "BACKSLASH" || t === "\\") return "backslash"
+    if (u === "GRAVE" || t === "`") return "grave"
+    if (u === "BRACKETLEFT" || t === "[") return "bracketleft"
+    if (u === "BRACKETRIGHT" || t === "]") return "bracketright"
+    if (u === "SPACE") return "SPACE"
+    if (u === "TAB") return "TAB"
+    if (u === "LEFT" || u === "RIGHT" || u === "UP" || u === "DOWN") return u
+    if (u === "HOME" || u === "END" || u === "INSERT" || u === "DELETE" || u === "BACKSPACE" || u === "PRINT") return u
+    if (/^[A-Z]$/.test(u)) return u
+    if (/^[0-9]$/.test(u)) return u
+    if (/^F([1-9]|1[0-2])$/.test(u)) return u
+    return ""
+}
+
+function normalizeChord(raw) {
+    var s = String(raw || "").trim()
+    if (!s || s.length > 80) return ""
+    if (/[\x00-\x1f"\\;\n\r]/.test(s)) return ""
+    var parts = s.split("+")
+    var mods = { SUPER: false, CTRL: false, ALT: false, SHIFT: false }
+    var key = ""
+    for (var i = 0; i < parts.length; i++) {
+        var tok = canonicalHotkeyToken(parts[i])
+        if (!tok) return ""
+        if (tok === "SUPER" || tok === "CTRL" || tok === "ALT" || tok === "SHIFT") {
+            mods[tok] = true
+            continue
+        }
+        if (key) return ""
+        key = tok
+    }
+    if (!key) return ""
+    if (!(mods.SUPER || mods.CTRL || mods.ALT)) return ""
+    var names = hotkeyKeyNames()
+    var keyOk = names[key] === true || /^[A-Z0-9]$/.test(key) || /^F([1-9]|1[0-2])$/.test(key)
+    if (!keyOk) return ""
+    var out = []
+    if (mods.SUPER) out.push("SUPER")
+    if (mods.CTRL) out.push("CTRL")
+    if (mods.ALT) out.push("ALT")
+    if (mods.SHIFT) out.push("SHIFT")
+    out.push(key)
+    return out.join(" + ")
+}
+
+function normalizeHotkeys(raw) {
+    var src = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}
+    var used = {}
+    function take(v) {
+        var c = normalizeChord(v)
+        if (!c || used[c]) return ""
+        used[c] = true
+        return c
+    }
+    var applyMatching = take(src.applyMatching)
+    var applyFresh = take(src.applyFresh)
+    var workspaces = {}
+    var wsRaw = src.workspaces && typeof src.workspaces === "object" && !Array.isArray(src.workspaces) ? src.workspaces : {}
+    for (var n = 1; n <= 10; n++) {
+        var c = take(wsRaw[String(n)] || wsRaw[n])
+        if (c) workspaces[String(n)] = c
+    }
+    return {
+        applyMatching: applyMatching,
+        applyFresh: applyFresh,
+        workspaces: workspaces
+    }
+}
+
+function assignHotkey(raw, slot, chord) {
+    var cur = normalizeHotkeys(raw)
+    var next = normalizeChord(chord)
+    var key = String(slot || "")
+    if (key === "applyMatching") cur.applyMatching = next
+    else if (key === "applyFresh") cur.applyFresh = next
+    else if (/^([1-9]|10)$/.test(key)) {
+        if (next) cur.workspaces[key] = next
+        else delete cur.workspaces[key]
+    }
+    if (next) {
+        if (key !== "applyMatching" && cur.applyMatching === next) cur.applyMatching = ""
+        if (key !== "applyFresh" && cur.applyFresh === next) cur.applyFresh = ""
+        var wsKeys = Object.keys(cur.workspaces)
+        for (var i = 0; i < wsKeys.length; i++) {
+            if (wsKeys[i] !== key && cur.workspaces[wsKeys[i]] === next)
+                delete cur.workspaces[wsKeys[i]]
+        }
+    }
+    return normalizeHotkeys(cur)
+}
+
+function qtKeyToHypr(key, text) {
+    var n = parseInt(key, 10)
+    if (n >= 0x41 && n <= 0x5a) return String.fromCharCode(n)
+    if (n >= 0x30 && n <= 0x39) return String.fromCharCode(n)
+    if (n >= 0x01000030 && n <= 0x0100003b) return "F" + (n - 0x0100002f)
+    var named = {
+        0x01000000: "ESCAPE",
+        0x01000001: "TAB",
+        0x01000003: "BACKSPACE",
+        0x01000004: "RETURN",
+        0x01000005: "RETURN",
+        0x01000006: "INSERT",
+        0x01000007: "DELETE",
+        0x01000009: "PRINT",
+        0x01000010: "HOME",
+        0x01000011: "END",
+        0x01000012: "LEFT",
+        0x01000013: "UP",
+        0x01000014: "RIGHT",
+        0x01000015: "DOWN",
+        0x01000016: "PAGE_UP",
+        0x01000017: "PAGE_DOWN",
+        0x20: "SPACE",
+        0x27: "apostrophe",
+        0x2c: "comma",
+        0x2d: "minus",
+        0x2e: "period",
+        0x2f: "slash",
+        0x3b: "semicolon",
+        0x3d: "equal",
+        0x5b: "bracketleft",
+        0x5c: "backslash",
+        0x5d: "bracketright",
+        0x60: "grave"
+    }
+    if (named[n]) return named[n]
+    var t = String(text || "")
+    if (/^[A-Za-z]$/.test(t)) return t.toUpperCase()
+    if (/^[0-9]$/.test(t)) return t
+    return ""
 }
 
 function normalizeWorkspaceNames(raw) {
@@ -2060,6 +2230,7 @@ function sanitizeConfig(cfg) {
         out.settings.gestureSource = cfg.settings.gestureSource === "profile" ? "profile" : "global"
         out.settings.persistHyprGestures = cfg.settings.persistHyprGestures === true
         out.settings.gestures = normalizeGestures(cfg.settings.gestures)
+        out.settings.hotkeys = normalizeHotkeys(cfg.settings.hotkeys)
     }
     var monitors = []
     var ids = []

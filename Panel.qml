@@ -107,6 +107,8 @@ Panel {
     property string chromeColorA: ""
     property string chromeColorI: ""
     property int chromeBorderSize: -1
+    property string hotkeyCapture: ""
+    readonly property var currentHotkeys: Model.normalizeHotkeys(config.settings && config.settings.hotkeys)
     property bool overflowOpen: false
     property var overflowDraft: []
     property int overflowDraftMax: 1
@@ -188,6 +190,7 @@ Panel {
         root.controller.hide()
     }
     function dismissOrClose() {
+        if (root.hotkeyCapture) { root.hotkeyCapture = ""; return }
         if (root.chromeOpen) { root.chromeOpen = false; return }
         if (root.organizerOpen) { root.organizerOpen = false; return }
         if (root.overflowOpen) { root.closeOverflow(); return }
@@ -1068,6 +1071,45 @@ Panel {
         saveProc.wantsGestures = true
         saveConfig()
     }
+    function workspaceHotkey(ws) {
+        var map = root.currentHotkeys.workspaces || {}
+        return String(map[String(ws)] || "")
+    }
+    function chordFromEvent(event) {
+        var key = event.key
+        if (key === Qt.Key_Shift || key === Qt.Key_Control || key === Qt.Key_Alt || key === Qt.Key_Meta || key === Qt.Key_Super_L || key === Qt.Key_Super_R)
+            return ""
+        var mods = []
+        if (event.modifiers & Qt.MetaModifier) mods.push("SUPER")
+        if (event.modifiers & Qt.ControlModifier) mods.push("CTRL")
+        if (event.modifiers & Qt.AltModifier) mods.push("ALT")
+        if (event.modifiers & Qt.ShiftModifier) mods.push("SHIFT")
+        var name = Model.qtKeyToHypr(key, event.text)
+        if (!name) return ""
+        // Hyprland consumes Super+… binds, so a plain/shifted key here means Super.
+        if (mods.indexOf("SUPER") < 0 && mods.indexOf("CTRL") < 0 && mods.indexOf("ALT") < 0)
+            mods.unshift("SUPER")
+        return Model.normalizeChord(mods.concat([name]).join(" + "))
+    }
+    function startHotkeyCapture(slot) {
+        root.hotkeyCapture = String(slot || "")
+        statusText = "Press a key (Shift/Ctrl/Alt extra). Super is added. Esc cancels."
+        Qt.callLater(function() { if (hotkeyOverlay) hotkeyOverlay.forceActiveFocus() })
+    }
+    function commitHotkey(slot, chord) {
+        var cfg = root.currentConfig()
+        cfg.settings.hotkeys = Model.assignHotkey(cfg.settings.hotkeys, slot, chord)
+        config = cfg
+        saveProc.wantsHotkeys = true
+        saveConfig()
+        statusText = chord ? ("Hotkey " + chord) : "Hotkey cleared"
+        clearStatusTimer.restart()
+    }
+    function applyHotkeys() {
+        hotkeyProc.running = true
+        statusText = "Applying hotkeys…"
+        clearStatusTimer.restart()
+    }
     function applyPreviewLayout(tiles) {
         if (!tiles || !tiles.length) return
         var byId = {}
@@ -1279,6 +1321,7 @@ Panel {
         property string pendingJson: ""
         property bool wantsSave: false
         property bool wantsGestures: false
+        property bool wantsHotkeys: false
         stdinEnabled: true
         stdout: StdioCollector { id: saveOut; waitForEnd: true }
         stderr: StdioCollector { id: saveErr; waitForEnd: true }
@@ -1299,6 +1342,10 @@ Panel {
                 if (saveProc.wantsGestures) {
                     saveProc.wantsGestures = false
                     root.applyGestures()
+                }
+                if (saveProc.wantsHotkeys) {
+                    saveProc.wantsHotkeys = false
+                    root.applyHotkeys()
                 }
             }
         }
@@ -1354,6 +1401,15 @@ Panel {
         stdout: StdioCollector { waitForEnd: true }
         onExited: function(code) {
             statusText = code === 0 ? "Gestures applied" : "Gesture apply failed"
+            clearStatusTimer.restart()
+        }
+    }
+    Process {
+        id: hotkeyProc
+        command: root.helperRun(["python3", root.pluginDir + "/scripts/hotkeys", "--config", root.configFile, "--plugin-dir", root.pluginDir, "--apply"], 8, 8192)
+        stdout: StdioCollector { waitForEnd: true }
+        onExited: function(code) {
+            statusText = code === 0 ? "Hotkeys applied" : "Hotkey apply failed"
             clearStatusTimer.restart()
         }
     }
@@ -1490,7 +1546,7 @@ Panel {
 
     Shortcut {
         sequence: "Escape"
-        enabled: root.opened
+        enabled: root.opened && root.hotkeyCapture === ""
         context: Qt.ApplicationShortcut
         onActivated: root.dismissOrClose()
     }
@@ -1510,7 +1566,7 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
-            blocked: root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || root.organizerOpen || root.chromeOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
+            blocked: root.hotkeyCapture !== "" || root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || root.organizerOpen || root.chromeOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
             onMoveRequested: function(dx, dy) { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.moveCursor(dx, dy) }
             onActivateRequested: { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.activateCursor() }
             onCloseRequested: root.dismissOrClose()
@@ -1929,6 +1985,48 @@ Panel {
                                 tooltipText: "On: extras stay on this workspace (Hyprland tiling). Off: extras still open, then move to the next unused workspace. Assigned workspaces and leave-alone pins are skipped."
                             }
                         }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
+                            Text {
+                                text: "Hotkey"
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                            }
+                            HintMark {
+                                tooltipText: "Opens this workspace’s saved apps and split on whatever workspace is focused. Skips if that workspace already has windows. Replaces any existing Hyprland bind for the chord."
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                textFormat: Text.PlainText
+                                text: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                    ? "Press a chord…"
+                                    : (root.workspaceHotkey(root.formWorkspace) || "Not set")
+                                color: root.hotkeyCapture === ("ws:" + root.formWorkspace) ? Color.accent : root.foreground
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption
+                                elide: Text.ElideRight
+                            }
+                            Button {
+                                bordered: true
+                                selected: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                text: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                    ? "Press a key…"
+                                    : (root.workspaceHotkey(root.formWorkspace) ? "Change" : "Set")
+                                tooltipText: "Click, then press the key. Super is included; hold Shift/Ctrl/Alt for extra mods. Esc cancels."
+                                onClicked: {
+                                    if (root.hotkeyCapture === ("ws:" + root.formWorkspace)) root.hotkeyCapture = ""
+                                    else root.startHotkeyCapture("ws:" + root.formWorkspace)
+                                }
+                            }
+                            Button {
+                                visible: root.workspaceHotkey(root.formWorkspace) !== ""
+                                bordered: true
+                                text: "Clear"
+                                onClicked: root.commitHotkey(String(root.formWorkspace), "")
+                            }
+                        }
                         Text {
                             visible: root.showMonitorPicker
                             Layout.fillWidth: true
@@ -2264,6 +2362,87 @@ Panel {
                                     onClicked: root.setGestureField("keyboard", !root.currentGestures.keyboard)
                                 }
                                 HintMark { tooltipText: "Comma and period (the < > keys). Follows Skip empty above." }
+                            }
+                        }
+
+                        SectionCard {
+                            title: "HOTKEYS"
+                            hint: "Global chords. Apply matching restores the saved layout (occupied workspaces stay). Fresh matching closes this layout’s preset workspaces, then applies empty. Per-workspace chords are on the Workspaces tab."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(6)
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(6)
+                                    Text {
+                                        text: "Apply matching"
+                                        color: root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                        Layout.preferredWidth: Style.space(120)
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        textFormat: Text.PlainText
+                                        text: root.hotkeyCapture === "applyMatching" ? "Press a chord…" : (root.currentHotkeys.applyMatching || "Not set")
+                                        color: root.hotkeyCapture === "applyMatching" ? Color.accent : root.foreground
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                        elide: Text.ElideRight
+                                    }
+                                    Button {
+                                        bordered: true
+                                        selected: root.hotkeyCapture === "applyMatching"
+                                        text: root.hotkeyCapture === "applyMatching" ? "Press a key…" : (root.currentHotkeys.applyMatching ? "Change" : "Set")
+                                        tooltipText: "Click, then press the key. Super is included; hold Shift/Ctrl/Alt for extra mods."
+                                        onClicked: {
+                                            if (root.hotkeyCapture === "applyMatching") root.hotkeyCapture = ""
+                                            else root.startHotkeyCapture("applyMatching")
+                                        }
+                                    }
+                                    Button {
+                                        visible: root.currentHotkeys.applyMatching !== ""
+                                        text: "Clear"
+                                        onClicked: root.commitHotkey("applyMatching", "")
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: Style.space(6)
+                                    Text {
+                                        text: "Fresh matching"
+                                        color: root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                        Layout.preferredWidth: Style.space(120)
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        textFormat: Text.PlainText
+                                        text: root.hotkeyCapture === "applyFresh" ? "Press a chord…" : (root.currentHotkeys.applyFresh || "Not set")
+                                        color: root.hotkeyCapture === "applyFresh" ? Color.accent : root.foreground
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                        elide: Text.ElideRight
+                                    }
+                                    Button {
+                                        bordered: true
+                                        selected: root.hotkeyCapture === "applyFresh"
+                                        text: root.hotkeyCapture === "applyFresh" ? "Press a key…" : (root.currentHotkeys.applyFresh ? "Change" : "Set")
+                                        tooltipText: "Click, then press the key. Super is included; hold Shift/Ctrl/Alt for extra mods."
+                                        onClicked: {
+                                            if (root.hotkeyCapture === "applyFresh") root.hotkeyCapture = ""
+                                            else root.startHotkeyCapture("applyFresh")
+                                        }
+                                    }
+                                    Button {
+                                        visible: root.currentHotkeys.applyFresh !== ""
+                                        text: "Clear"
+                                        onClicked: root.commitHotkey("applyFresh", "")
+                                    }
+                                }
                             }
                         }
 
@@ -2629,6 +2808,38 @@ Panel {
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
                     }
+                }
+            }
+
+            Item {
+                id: hotkeyOverlay
+                width: 0
+                height: 0
+                focus: root.hotkeyCapture !== ""
+                Keys.onPressed: function(event) {
+                    if (root.hotkeyCapture === "") return
+                    event.accepted = true
+                    var bareEsc = event.key === Qt.Key_Escape && !(event.modifiers & (Qt.MetaModifier | Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier))
+                    if (bareEsc) {
+                        root.hotkeyCapture = ""
+                        root.statusText = ""
+                        return
+                    }
+                    var chord = root.chordFromEvent(event)
+                    if (!chord) return
+                    var slot = root.hotkeyCapture
+                    if (slot.indexOf("ws:") === 0) slot = slot.slice(3)
+                    root.hotkeyCapture = ""
+                    root.commitHotkey(slot, chord)
+                }
+            }
+            Timer {
+                interval: 40
+                repeat: true
+                running: root.opened && root.hotkeyCapture !== ""
+                onTriggered: {
+                    if (hotkeyOverlay && !hotkeyOverlay.activeFocus)
+                        hotkeyOverlay.forceActiveFocus()
                 }
             }
 

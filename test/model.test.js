@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -28,6 +28,24 @@ if (m.sanitizeConfig({ version: 2, settings: { persistHyprGestures: true }, prof
   throw new Error("sanitize keeps persist on")
 if (m.sanitizeConfig({ version: 2, settings: { persistHyprGestures: false }, profiles: [{ id: "p", name: "P" }] }).settings.persistHyprGestures !== false)
   throw new Error("sanitize keeps persist off")
+if (!m.defaultConfig().settings.hotkeys || m.defaultConfig().settings.hotkeys.applyMatching !== "")
+  throw new Error("hotkeys default empty")
+if (m.normalizeChord("SUPER + SHIFT + 2") !== "SUPER + SHIFT + 2") throw new Error("normalize chord")
+if (m.normalizeChord("SHIFT + A") !== "") throw new Error("shift-only chord refused")
+if (m.normalizeChord("SUPER + A;rm") !== "") throw new Error("injection chord refused")
+if (m.qtKeyToHypr(0x41, "a") !== "A") throw new Error("qt key A")
+if (m.qtKeyToHypr(0x01000012, "") !== "LEFT") throw new Error("qt key LEFT")
+const hk = m.sanitizeConfig({
+  version: 2,
+  settings: { hotkeys: { applyMatching: "SUPER + ALT + W", workspaces: { "2": "SUPER + SHIFT + 2", "99": "SUPER + X" } } },
+  profiles: [{ id: "p", name: "P" }]
+}).settings.hotkeys
+if (hk.applyMatching !== "SUPER + ALT + W") throw new Error("persist apply matching hotkey")
+if (hk.workspaces["2"] !== "SUPER + SHIFT + 2") throw new Error("persist ws hotkey")
+if (hk.workspaces["99"]) throw new Error("invalid ws hotkey dropped")
+const assigned = m.assignHotkey(hk, "applyFresh", "SUPER + SHIFT + 2")
+if (assigned.workspaces["2"]) throw new Error("assignHotkey clears duplicate ws chord")
+if (assigned.applyFresh !== "SUPER + SHIFT + 2") throw new Error("assignHotkey sets fresh")
 if (m.parseCappedJson('{"ok":true}').ok !== true) throw new Error("parse capped json")
 if (m.parseCappedJson("not json") !== null) throw new Error("parse capped invalid")
 if (m.parseCappedJson("{\"x\":1}", 3) !== null) throw new Error("parse capped oversize")

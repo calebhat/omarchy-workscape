@@ -19,6 +19,7 @@ export PYTHONDONTWRITEBYTECODE=1
 MATCH="$PLUGIN_DIR/scripts/match"
 GEOM="$PLUGIN_DIR/scripts/geom"
 GESTURES="$PLUGIN_DIR/scripts/gestures"
+HOTKEYS="$PLUGIN_DIR/scripts/hotkeys"
 STATEIO="$PLUGIN_DIR/scripts/stateio"
 WORKSCAPE_APPLY_ARGV=("$@")
 
@@ -439,7 +440,7 @@ cmd_launch() {
     echo "usage: $0 --launch <workspace> <exec> [silent] [geom-json]" >&2
     exit 1
   fi
-  if ! [[ $workspace =~ ^([1-9]|10)$ ]]; then
+  if ! [[ $workspace =~ ^([1-9]|1[0-9]|20)$ ]]; then
     echo "invalid workspace: $workspace" >&2
     exit 1
   fi
@@ -988,6 +989,7 @@ cmd_apply() {
   wait_for_hyprland || exit 1
   install_hypr_lua || true
   python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${requested_id:-}" --apply >/dev/null || true
+  python3 "$HOTKEYS" --config "$CONFIG_FILE" --plugin-dir "$PLUGIN_DIR" --apply >/dev/null || true
 
   local enabled
   enabled=$(jq_config -r '.settings.enabled // true')
@@ -1155,6 +1157,101 @@ cmd_fresh_apply() {
   cmd_apply hotkey "$profile_id" true
 }
 
+cmd_apply_hotkeys() {
+  ensure_config || exit 1
+  python3 "$HOTKEYS" --config "$CONFIG_FILE" --plugin-dir "$PLUGIN_DIR" --apply
+}
+
+cmd_apply_workspace_here() {
+  local src=${1:-}
+  ensure_isolated
+  ensure_config || exit 1
+  wait_for_hyprland || exit 1
+  if ! [[ $src =~ ^([1-9]|10)$ ]]; then
+    echo "invalid source workspace: $src" >&2
+    exit 1
+  fi
+  local dest
+  dest=$(timeout 2 hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
+  dest=${dest//$'\n'/}
+  if ! [[ $dest =~ ^([1-9]|1[0-9]|20)$ ]]; then
+    echo "no focused workspace"
+    notify "WorkScape" "No focused workspace"
+    exit 1
+  fi
+  local status_json profile_id
+  status_json=$(cmd_live_status)
+  profile_id=$(printf '%s' "$status_json" | jq -r '.matchedProfileId // empty')
+  if [[ -z $profile_id || $profile_id == "null" ]]; then
+    echo "no matching profile for the current monitor layout"
+    notify "WorkScape" "No profile matches the current monitors"
+    exit 0
+  fi
+  profile_must_match "$profile_id" || exit 1
+  local count
+  count=$(jq_config -r --arg id "$profile_id" --arg ws "$src" '
+    [.profiles[] | select(.id==$id) | .assignments[]? | select((.workspace|tostring)==$ws and .enabled != false)] | length
+  ' 2>/dev/null || echo 0)
+  if ! [[ $count =~ ^[0-9]+$ ]] || (( count < 1 )); then
+    echo "no apps on workspace $src"
+    notify "WorkScape" "WS $src has no saved apps in the matching profile"
+    exit 0
+  fi
+  local clients_json occupied_ws
+  clients_json=$(hypr_clients_json)
+  occupied_ws=$(printf '%s' "$clients_json" | jq -r '[.[] | (.workspace.id|tostring)] | unique | join(" ")' 2>/dev/null || echo "")
+  if [[ " $occupied_ws " == *" $dest "* ]]; then
+    echo "skip open-here — workspace $dest already has windows"
+    notify "WorkScape" "WS $dest already has windows — switch to an empty workspace first"
+    exit 0
+  fi
+  export WORKSCAPE_OCCUPIED_WS="$occupied_ws"
+  echo "opening WS $src layout on focused WS $dest"
+  echo "[]" | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --apply-one-pref --src "$src" --dest "$dest" >/dev/null || true
+  local stagger silent
+  stagger=$(jq_config -r '.settings.staggerMs // 80')
+  if ! [[ $stagger =~ ^[0-9]+$ ]]; then stagger=80; fi
+  if ((stagger > 2000)); then stagger=2000; fi
+  silent=$(jq_config -r '.settings.silent // true')
+  local ws_layout
+  ws_layout=$(jq_config -r --arg id "$profile_id" --arg ws "$src" '
+    (.profiles[] | select(.id==$id) | .workspacePrefs[$ws].layout) // "dwindle"
+  ' 2>/dev/null || echo dwindle)
+  local lock_n
+  lock_n=$(jq_config -r --arg id "$profile_id" --arg ws "$src" '
+    [.profiles[] | select(.id==$id) | .assignments[]? | select((.workspace|tostring)==$ws and .lockPlace==true)] | length
+  ' 2>/dev/null || echo 0)
+  if [[ $lock_n =~ ^[0-9]+$ ]] && (( lock_n >= 2 )); then
+    ws_layout=dwindle
+  fi
+  local idx=0 item used_addrs=""
+  while IFS= read -r item; do
+    [[ -n $item ]] || continue
+    local item_ws exec_cmd name enabled geom_json cwd url
+    item_ws=$(echo "$item" | jq -r '.workspace')
+    [[ $item_ws == "$src" ]] || continue
+    enabled=$(echo "$item" | jq -r '.enabled // true')
+    [[ $enabled == "true" ]] || continue
+    exec_cmd=$(echo "$item" | jq -r '.exec // .command // empty')
+    name=$(echo "$item" | jq -r '.name // empty')
+    [[ -n $exec_cmd ]] || continue
+    geom_json=$(echo "$item" | jq -c '.geom // empty')
+    cwd=$(echo "$item" | jq -r '.cwd // empty')
+    url=$(echo "$item" | jq -r '.url // empty')
+    if ((idx > 0)) && [[ $stagger -gt 0 ]]; then
+      sleep "$(awk "BEGIN {print $stagger/1000}")"
+    fi
+    echo "launching [$dest] $name (from WS $src)"
+    cmd_launch "$dest" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" "" "$ws_layout" </dev/null || true
+    clients_json=$(hypr_clients_json)
+    idx=$((idx + 1))
+  done < <(profile_assignments "$profile_id")
+  python3 "$GEOM" --apply-config --config "$CONFIG_FILE" --profile-id "$profile_id" --remap "${src}:${dest}" || true
+  hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$dest")" </dev/null >/dev/null 2>&1 || true
+  notify "WorkScape" "Opened WS $src layout on WS $dest"
+  echo "done"
+}
+
 cmd_launch_all() {
   local force="${1:-false}"
   cmd_apply boot "" "$force"
@@ -1175,6 +1272,8 @@ case "${1:-}" in
   --apply-matching) cmd_apply hotkey "" true ;;
   --apply-profile) cmd_apply hotkey "${2:-}" true ;;
   --fresh-apply-profile) cmd_fresh_apply "${2:-}" ;;
+  --apply-workspace-here) cmd_apply_workspace_here "${2:-}" ;;
+  --apply-hotkeys) cmd_apply_hotkeys ;;
   --reset-empty-workspaces) cmd_reset_empty "${2:-}" ;;
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
   --capture-workspace) python3 "$PLUGIN_DIR/scripts/capture" --workspace "${2:-1}" ;;
@@ -1198,6 +1297,8 @@ workscape.sh — helper for io.github.calebhat.workscape
   --apply-matching             detect layout, bind workspaces, launch apps
   --apply-profile <id>         bind + launch a specific profile (refused if displays/network don't match)
   --fresh-apply-profile [id]   close that profile's app workspaces, then apply empty (refused if it doesn't match now)
+  --apply-workspace-here <n>   launch matching profile WS n onto the focused workspace (skips if occupied)
+  --apply-hotkeys              write user hotkeys to hypr/workscape-hotkeys.lua and bind them
   --reset-empty-workspaces [id] restore Omarchy dwindle on workspaces with no assigned apps (keeps Fill-next Stage chain)
   --watch-extras               keep locked panes pinned; send extras away when extras=block
   --apply-gestures             write trackpad / swipe prefs and hyprctl eval them

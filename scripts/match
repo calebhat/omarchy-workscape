@@ -615,6 +615,69 @@ def reset_empty_workspaces(cfg: dict[str, Any], profile: dict[str, Any]) -> dict
     return {"ok": True, "cleared": cleared, "overflowKept": kept_overflow, "assigned": sorted(assigned, key=int)}
 
 
+def workspace_pref_luas(ws: str, layout: str, vis: int, persist: bool = False, mon: str = "") -> list[str]:
+    ws = SAFE.safe_ws(ws)
+    if not ws:
+        return []
+    layout = native_layout_name(layout)
+    vis = max(1, min(20, int(vis or 2)))
+    mon = safe_connector(mon) or ""
+    parts = [f'workspace = "{ws}"', f"persistent = {'true' if persist else 'false'}"]
+    if mon:
+        parts.append(f'monitor = "{SAFE.lua_str(mon)}"')
+    parts.append(f'layout = "{layout}"')
+    cmds: list[str] = []
+    if layout == "scrolling":
+        col = round(1.0 / vis, 4)
+        parts.append(f"layout_opts = {{ column_width = {col} }}")
+        cmds.append(
+            f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
+            f"scrolling_width = {col} }})"
+        )
+    elif layout == "master":
+        parts.append('layout_opts = { orientation = "left" }')
+        cmds.append(
+            f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})'
+        )
+    else:
+        cmds.append(
+            f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})'
+        )
+    cmds.append("hl.workspace_rule({ " + ", ".join(parts) + " })")
+    if mon:
+        cmds.append(
+            f'hl.dispatch(hl.dsp.workspace.move({{workspace="{SAFE.lua_str(ws)}", monitor="{SAFE.lua_str(mon)}"}}))'
+        )
+    return cmds
+
+
+def stamp_workspace_pref(ws: str, layout: str, vis: int, persist: bool = False, mon: str = "") -> None:
+    for lua in workspace_pref_luas(ws, layout, vis, persist, mon):
+        _hypr_eval(lua)
+
+
+def apply_one_ws_pref(profile: dict[str, Any], src_ws: str, dest_ws: str) -> dict[str, Any]:
+    src = SAFE.safe_ws(src_ws)
+    dest = SAFE.safe_ws(dest_ws)
+    if not src or not dest:
+        return {"ok": False, "error": "bad workspace"}
+    prefs = profile.get("workspacePrefs") or {}
+    pref = prefs.get(src) or prefs.get(int(src) if src.isdigit() else src) or {}
+    if not isinstance(pref, dict):
+        pref = {}
+    layout, vis, extras = effective_ws_pref(profile, src, pref)
+    _hypr_eval('pcall(function() require("hypr.workscape-binds") end)')
+    stamp_workspace_pref(dest, layout, vis, False, "")
+    return {
+        "ok": True,
+        "workspace": dest,
+        "from": src,
+        "layout": layout,
+        "visibleCount": vis,
+        "extras": extras,
+    }
+
+
 def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]]) -> dict[str, Any]:
     pins = workspace_bindings(cfg, profile, live_list)
     prefs = profile.get("workspacePrefs") or {}
@@ -642,33 +705,7 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
         mon = pins.get(ws) or ""
         mon = safe_connector(mon) or ""
         persist = profile.get("persistentWorkspaces") is True
-        parts = [f'workspace = "{ws}"', f"persistent = {'true' if persist else 'false'}"]
-        if mon:
-            parts.append(f'monitor = "{mon}"')
-        parts.append(f'layout = "{layout}"')
-        if layout == "scrolling":
-            col = round(1.0 / vis, 4)
-            parts.append(f"layout_opts = {{ column_width = {col} }}")
-            spawn = (
-                f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, '
-                f"scrolling_width = {col} }})"
-            )
-            _hypr_eval(spawn)
-        elif layout == "master":
-            parts.append("layout_opts = { orientation = \"left\" }")
-            _hypr_eval(
-                f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})'
-            )
-        else:
-            _hypr_eval(
-                f'hl.window_rule({{ name = "workscape-w{ws}-width", match = {{ workspace = "{ws}" }}, enabled = false }})'
-            )
-        lua = "hl.workspace_rule({ " + ", ".join(parts) + " })"
-        _hypr_eval(lua)
-        if mon:
-            _hypr_eval(
-                f'hl.dispatch(hl.dsp.workspace.move({{workspace="{SAFE.lua_str(ws)}", monitor="{SAFE.lua_str(mon)}"}}))'
-            )
+        stamp_workspace_pref(ws, layout, vis, persist, mon)
         applied.append({"workspace": ws, "layout": layout, "monitor": mon, "visibleCount": vis, "lockSizes": lock, "extras": extras})
     return {"ok": True, "workspaces": applied}
 
@@ -683,6 +720,9 @@ def main() -> int:
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--apply-outputs", action="store_true")
     parser.add_argument("--apply-ws-prefs", action="store_true")
+    parser.add_argument("--apply-one-pref", action="store_true")
+    parser.add_argument("--src", default="")
+    parser.add_argument("--dest", default="")
     parser.add_argument("--reset-empty", action="store_true")
     parser.add_argument("--network-json", default="")
     parser.add_argument("--needs-identity", action="store_true")
@@ -750,6 +790,17 @@ def main() -> int:
         json.dump(apply_ws_prefs(cfg, prof, live), sys.stdout)
         sys.stdout.write("\n")
         return 0
+    if args.apply_one_pref:
+        pid = args.profile_id
+        prof = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
+        if not prof:
+            json.dump({"ok": False, "error": "no profile"}, sys.stdout)
+            sys.stdout.write("\n")
+            return 2
+        result = apply_one_ws_pref(prof, args.src, args.dest)
+        json.dump(result, sys.stdout)
+        sys.stdout.write("\n")
+        return 0 if result.get("ok") else 1
     if args.reset_empty:
         pid = args.profile_id
         prof = next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)

@@ -29,7 +29,7 @@ Use this on [omarchyplugins.com](https://omarchyplugins.com) / the marketplace i
 
 **Longer (about / README excerpt)**
 
-> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses native tiling (dwindle, scrolling, master) and whether extras stay or move to the next workspace. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Apply from the bar, a middle-click, or optionally at login. Occupied workspaces are left alone unless you **Fresh Workscape**. A profile that does not match the connected displays cannot be applied.
+> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses native tiling (dwindle, scrolling, master) and whether extras stay or move to the next workspace. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Assign a hotkey to a workspace to open that saved layout on whatever workspace is focused, plus global chords for **Apply matching** and **Fresh Workscape**. Apply from the bar, a middle-click, a hotkey, or optionally at login. Occupied workspaces are left alone unless you **Fresh Workscape**. A profile that does not match the connected displays cannot be applied.
 
 **Suggested listing metadata**
 
@@ -166,6 +166,8 @@ Controls that do not apply to the selected workspace are **hidden**, not greyed 
 
 **Super+W** closes the focused column and focuses the **next** one in left-to-right order, including a strip you resized very small.
 
+**Hotkey** on the workspace card binds a chord that opens **this** workspace’s saved apps and split on whatever workspace is currently focused. Click Set, then press the key — Super is included automatically because Hyprland would swallow Super+… while the panel is open. Hold Shift/Ctrl/Alt for extra mods. Empty target workspaces get the layout; occupied ones are skipped (open an empty workspace first). The matching profile supplies the apps.
+
 **SUPER+J** (Omarchy toggle split) is dwindle-only. On scrolling it does nothing, so Hyprland does not show a Lua error overlay.
 
 **Fill next open workspace** is the **global** chain for this profile:
@@ -202,6 +204,7 @@ Edits save and apply on change (no Apply button).
 - **Keep swipes after Hyprland reload** is **off** by default. Turning it on writes `~/.config/hypr/workscape-gestures.lua` and inserts `pcall(require, "hypr.workscape-gestures")` into `hyprland.lua` (backed up first). `workscape.sh --restore-hypr` undoes that.
 - **SUPER+, / .** previous and next workspace (follows Skip empty).
 - **SUPER+J** toggles dwindle split only; ignored on scrolling so the compositor does not show a Lua error.
+- **HOTKEYS** (this tab): set **Apply matching** and **Fresh matching** chords. Click Set, then press the key (Super is added; hold Shift/Ctrl/Alt for extra mods). Esc cancels. These write `~/.config/hypr/workscape-hotkeys.lua` and a require in `hyprland.lua` (backed up). Undo with `workscape.sh --restore-hypr`. Per-workspace chords live on the Workspaces tab.
 
 ### 5. Typical day
 
@@ -227,10 +230,13 @@ workscape.sh --live-status
 workscape.sh --apply-matching
 workscape.sh --apply-profile desk-dock
 workscape.sh --fresh-apply-profile laptop   # close that profile’s preset workspaces, then apply empty
+workscape.sh --apply-workspace-here 2       # launch matching profile WS 2 onto the focused workspace
+workscape.sh --apply-hotkeys                # write user hotkeys and bind them
 workscape.sh --capture-workspace 2          # snapshot live windows on WS 2 as JSON
 omarchy-shell -q io.github.calebhat.workscape applyMatching
 omarchy-shell -q io.github.calebhat.workscape applyProfile laptop
 omarchy-shell -q io.github.calebhat.workscape applyFresh desk-dock
+omarchy-shell -q io.github.calebhat.workscape applyWorkspaceHere 2
 omarchy-shell -q io.github.calebhat.workscape status
 omarchy-shell -q io.github.calebhat.workscape.panel toggle   # open/close the popout
 ```
@@ -239,7 +245,7 @@ omarchy-shell -q io.github.calebhat.workscape.panel toggle   # open/close the po
 
 ## Hyprland files
 
-Apply copies `hypr/workscape-binds.lua` to `~/.config/hypr/workscape-binds.lua` so Super+arrows on scrolling stay on this workspace. Gesture apply writes `workscape-gestures.lua` and inserts `pcall(require, "hypr.workscape-gestures")` into `hyprland.lua` when missing. For Super+arrow binds at compositor start (before the first Apply), add:
+Apply copies `hypr/workscape-binds.lua` to `~/.config/hypr/workscape-binds.lua` so Super+arrows on scrolling stay on this workspace. Gesture apply writes `workscape-gestures.lua` and inserts `pcall(require, "hypr.workscape-gestures")` into `hyprland.lua` when missing. Assigned hotkeys write `workscape-hotkeys.lua` and insert `pcall(require, "hypr.workscape-hotkeys")`. For Super+arrow binds at compositor start (before the first Apply), add:
 
 ```lua
 pcall(require, "hypr.workscape-binds")
@@ -254,7 +260,7 @@ pcall(require, "hypr.workscape-binds")
 
 ## Security notes
 
-Plugins run unsandboxed. WorkScape only interpolates allowlisted values into `hyprctl eval` (workspace 1–20, `0x` addresses, connector names). User-authored launch commands in the profile are executed as that user. Config is `0600` under `~/.local/state`. Gesture persist and `hyprland.lua` edits are **off until you enable Keep swipes after Hyprland reload**. `workscape.sh --restore-hypr` removes those files. Network matching is convenience, not a trust boundary (SSIDs can be spoofed). Apply/Fresh of a profile that does not match live displays is refused.
+Plugins run unsandboxed. WorkScape only interpolates allowlisted values into `hyprctl eval` (workspace 1–20, `0x` addresses, connector names). User-authored launch commands in the profile are executed as that user. Hotkey chords are allowlisted (Super/Ctrl/Alt plus a known key); the generated lua never interpolates freeform strings. Config is `0600` under `~/.local/state`. Gesture persist and `hyprland.lua` edits are **off until you enable Keep swipes after Hyprland reload**. Setting a hotkey does write `workscape-hotkeys.lua` and a require so the chord survives reload. `workscape.sh --restore-hypr` removes those files. Network matching is convenience, not a trust boundary (SSIDs can be spoofed). Apply/Fresh of a profile that does not match live displays is refused.
 
 ## License
 

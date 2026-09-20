@@ -40,4 +40,4 @@ Marketplace listing: only after this tree is on GitHub `master` (the site
 clones HEAD). Submit via `omacom/omarchy-plugin-marketplace` using
 `SUBMISSION.md` (category Desktop; tags hyprland, workspaces, bar).
 
-Version in `manifest.json` is **1.9.6**.
+Version in `manifest.json` is **1.11.0**.

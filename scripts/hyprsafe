@@ -35,6 +35,7 @@ STATE_NAMES = frozenset({
     "last_boot_id",
     "last_applied_profile",
     "workscape-gestures.lua",
+    "workscape-hotkeys.lua",
     "hypr-owned.json",
     "state.json",
 })

@@ -52,6 +52,18 @@ Item {
         stderr: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.warn("[workscape] gestures] " + d) } }
         onExited: function(code) {
             root.log("apply-gestures exited " + code)
+            if (!hotkeyBootProc.running)
+                hotkeyBootProc.running = true
+        }
+    }
+
+    Process {
+        id: hotkeyBootProc
+        command: root.helperRun(["bash", root.script, "--apply-hotkeys"], 8, 8192)
+        stdout: StdioCollector { waitForEnd: true }
+        stderr: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.warn("[workscape] hotkeys] " + d) } }
+        onExited: function(code) {
+            root.log("apply-hotkeys exited " + code)
         }
     }
 
@@ -195,6 +207,20 @@ Item {
         launchProc.running = true
     }
 
+    function applyWorkspaceHere(ws) {
+        if (launchProc.running) {
+            root.log("apply already in progress")
+            return
+        }
+        launchProc.command = root.helperRun(["bash", root.script, "--apply-workspace-here", String(ws || "")], 180, 65536)
+        launchProc.running = true
+    }
+
+    function applyHotkeys() {
+        if (hotkeyBootProc.running) return
+        hotkeyBootProc.running = true
+    }
+
     function launchOnWorkspace(workspace, execCmd) {
         var silent = "true"
         manualLaunchProc.command = root.helperRun(["bash", root.script, "--launch", String(workspace), execCmd, silent], 15, 4096)
@@ -222,6 +248,8 @@ Item {
         function applyMatching(): void { root.applyMatching() }
         function applyProfile(profileId: string): void { root.applyProfile(profileId) }
         function applyFresh(profileId: string): void { root.applyFresh(profileId) }
+        function applyWorkspaceHere(ws: string): void { root.applyWorkspaceHere(ws) }
+        function applyHotkeys(): void { root.applyHotkeys() }
         function refreshConfig(): void { root.refreshConfig() }
         function status(): string { return root.status() }
     }
