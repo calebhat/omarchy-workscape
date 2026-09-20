@@ -55,3 +55,15 @@ assert "WORKSCAPE_MIGRATE_OCCUPIED" in text
 assert "profile changed" in text
 print("apply matching rebinds occupied pins ok")
 PY
+
+python3 - "$SH" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text()
+start = text.index("launch_profile_assignments()")
+end = text.index("\ncmd_apply(", start)
+body = text[start:end]
+assert "boot_log=" in body, "launch_profile_assignments must assign boot_log under set -u"
+assert body.index("boot_log=") < body.index('>> "$boot_log"')
+print("boot_log assigned before use ok")
+PY
