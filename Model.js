@@ -1452,6 +1452,72 @@ function applyShapeToApps(apps, shapeId) {
     return list
 }
 
+// A Hyprland group occupies a single tile, so the preview must pack one pane
+// per group rather than one per window. Returns the tile representatives in
+// order plus, for each input index, the representative it belongs to.
+function collapseGroupTiles(list) {
+    var tiles = []
+    var owner = []
+    var seen = {}
+    for (var i = 0; i < list.length; i++) {
+        var token = list[i] && list[i].group ? String(list[i].group) : ""
+        if (!token || assignmentPlace(list[i]) === "float") {
+            owner.push(tiles.length)
+            tiles.push(list[i])
+            continue
+        }
+        if (seen[token] === undefined) {
+            seen[token] = tiles.length
+            tiles.push(list[i])
+        }
+        owner.push(seen[token])
+    }
+    return { tiles: tiles, owner: owner }
+}
+
+// Per-window view of the same collapse, for the preview: it draws one pane per
+// tile, so every member after the first is hidden and the first carries a tab
+// strip naming the whole group. Entries line up with `list` index for index;
+// an ungrouped window gets null and is drawn the ordinary way.
+function groupPreviewTiles(list) {
+    var src = list || []
+    var counts = {}
+    for (var i = 0; i < src.length; i++) {
+        var t = groupTokenOf(src[i])
+        if (t) counts[t] = (counts[t] || 0) + 1
+    }
+    var out = []
+    var reps = {}
+    for (var j = 0; j < src.length; j++) {
+        var token = groupTokenOf(src[j])
+        // A lone member is not a group: it occupies its tile by itself and a
+        // one-tab strip would be noise.
+        if (!token || counts[token] < 2) { out.push(null); continue }
+        if (reps[token] === undefined) {
+            reps[token] = j
+            var tabs = []
+            var active = null
+            for (var k = 0; k < src.length; k++) {
+                if (groupTokenOf(src[k]) !== token) continue
+                var isActive = src[k].groupActive === true
+                if (isActive && !active) active = src[k]
+                tabs.push({ id: String(src[k].id || ""), name: String(src[k].name || "App"), exec: String(src[k].exec || src[k].command || ""), active: isActive })
+            }
+            out.push({ rep: true, repIndex: j, tabs: tabs, active: active })
+        } else {
+            out.push({ rep: false, repIndex: reps[token], tabs: [], active: null })
+        }
+    }
+    return out
+}
+
+// A floating window sits above the tiles, so it never joins a tile group.
+function groupTokenOf(a) {
+    if (!a || !a.group) return ""
+    if (assignmentPlace(a) === "float") return ""
+    return String(a.group)
+}
+
 function chipGeomsForWorkspace(profile, workspace) {
     var ws = parseInt(workspace, 10)
     var list = []
@@ -1462,7 +1528,8 @@ function chipGeomsForWorkspace(profile, workspace) {
     }
     if (!list.length) return [{ x: 0, y: 0, w: 0.5, h: 1 }, { x: 0.5, y: 0, w: 0.5, h: 1 }]
     var pref = effectiveWorkspacePref(profile, ws)
-    return packedGeomsForApps(list, pref.layout, 1 / Math.max(1, pref.visibleCount))
+    var collapsed = collapseGroupTiles(list)
+    return packedGeomsForApps(collapsed.tiles, pref.layout, 1 / Math.max(1, pref.visibleCount))
 }
 
 function geomRight(g) { return Number(g.x) + Number(g.w) }
@@ -1524,9 +1591,19 @@ function packedGeomsForApps(apps, layout, columnWidth) {
     var packLayout = layout === "scrolling" ? "dwindle" : (layout || "dwindle")
     var tileList = []
     var tilePos = []
+    // Which tile each entry draws in. Members of a group share a tile, so they
+    // also share its geometry — their identical geoms are the group, not an
+    // overlap, and packing them as separate panes would lay out one pane too
+    // many and throw the saved layout away.
+    var tileOf = []
+    var groupSeen = {}
     var i
     for (i = 0; i < n; i++) {
-        if (assignmentPlace(list[i]) === "float") continue
+        if (assignmentPlace(list[i]) === "float") { tileOf.push(-1); continue }
+        var gtok = groupTokenOf(list[i])
+        if (gtok && groupSeen[gtok] !== undefined) { tileOf.push(groupSeen[gtok]); continue }
+        if (gtok) groupSeen[gtok] = tileList.length
+        tileOf.push(tileList.length)
         tilePos.push(i)
         tileList.push(list[i])
     }
@@ -1552,14 +1629,12 @@ function packedGeomsForApps(apps, layout, columnWidth) {
     }
     var use = (!anyCustom || layoutHasOverlap(tileGeoms)) ? autos : tileGeoms
     var out = []
-    t = 0
     for (i = 0; i < n; i++) {
         var item
-        if (assignmentPlace(list[i]) === "float") {
+        if (tileOf[i] < 0) {
             item = normalizeFloatGeom(list[i] && list[i].geom) || normalizeFloatGeom({ x: 0.12, y: 0.12, w: 0.4, h: 0.4 })
         } else {
-            item = clone(use[t] || { x: 0, y: 0, w: 1, h: 1 })
-            t++
+            item = clone(use[tileOf[i]] || { x: 0, y: 0, w: 1, h: 1 })
         }
         if (list[i] && list[i].id) item.id = list[i].id
         out.push(item)
@@ -1783,22 +1858,40 @@ function removeAppAndFill(apps, id) {
     var gone = list[idx]
     var ws = gone.workspace
     var hole = assignmentPlace(gone) === "float" ? null : normalizeGeom(gone.geom)
+    var goneToken = groupTokenOf(gone)
     list.splice(idx, 1)
     if (!hole) return list
+    // Closing one tab of a group leaves the tile occupied by the remaining
+    // members, so there is no hole and the layout must be left alone.
+    if (goneToken) {
+        for (i = 0; i < list.length; i++) {
+            if (String(list[i].workspace) !== String(ws)) continue
+            if (groupTokenOf(list[i]) === goneToken) return list
+        }
+    }
+    // Indices are grouped per tile: a group's members share one entry, take one
+    // geometry between them, and are written back together.
     var tileIdx = []
     var tileGeoms = []
     var missing = false
+    var tileSeen = {}
     for (i = 0; i < list.length; i++) {
         if (String(list[i].workspace) !== String(ws)) continue
         if (assignmentPlace(list[i]) === "float") continue
         var g = normalizeGeom(list[i].geom)
         if (!g) missing = true
-        tileIdx.push(i)
+        var tok = groupTokenOf(list[i])
+        if (tok && tileSeen[tok] !== undefined) { tileIdx[tileSeen[tok]].push(i); continue }
+        if (tok) tileSeen[tok] = tileIdx.length
+        tileIdx.push([i])
         tileGeoms.push(g || { x: 0, y: 0, w: 1, h: 1 })
+    }
+    function setTileGeom(t, geom) {
+        for (var k = 0; k < tileIdx[t].length; k++) list[tileIdx[t][k]].geom = clone(geom)
     }
     if (!tileIdx.length) return list
     if (tileIdx.length === 1) {
-        list[tileIdx[0]].geom = { x: 0, y: 0, w: 1, h: 1 }
+        setTileGeom(0, { x: 0, y: 0, w: 1, h: 1 })
         return list
     }
     if (missing) return list
@@ -1810,11 +1903,11 @@ function removeAppAndFill(apps, id) {
     if (after + 0.04 < before || layoutHasOverlap(filled)) {
         var autos = autoLayoutRects(tileIdx.length, "dwindle", 0.49)
         for (i = 0; i < tileIdx.length; i++) {
-            if (autos[i]) list[tileIdx[i]].geom = autos[i]
+            if (autos[i]) setTileGeom(i, autos[i])
         }
         return list
     }
-    for (i = 0; i < tileIdx.length; i++) list[tileIdx[i]].geom = filled[i]
+    for (i = 0; i < tileIdx.length; i++) setTileGeom(i, filled[i])
     return list
 }
 
@@ -2057,6 +2150,15 @@ function normalizeAssignment(a) {
     if (title) out.title = title.slice(0, 120)
     var cls = String(a.class || a.windowClass || "").trim()
     if (cls) out.class = cls.slice(0, 80)
+    // Hyprland window group this assignment belongs to. Members of one group
+    // share a token and occupy a single tile; order inside the group is the
+    // order of the assignments themselves. groupActive marks the tab that was
+    // on top when the workspace was captured. Mirrors scripts/schema.
+    var group = String(a.group || "").trim()
+    if (group) {
+        out.group = group.slice(0, 40)
+        if (a.groupActive === true) out.groupActive = true
+    }
     var geom = a.place === "float" ? normalizeFloatGeom(a.geom) : normalizeGeom(a.geom)
     if (geom) out.geom = geom
     var chrome = normalizeChrome(a.chrome)
@@ -2092,10 +2194,13 @@ function ensureAssignmentGeoms(assignments, ws, pref) {
         }
     }
     if (!group.length) return list
-    var packed = packedGeomsForApps(group, (pref && pref.layout) || "dwindle", 1 / Math.max(1, (pref && pref.visibleCount) || 2))
+    // Group members share their tile's geom, so pack tiles and then hand the
+    // same box to every window in that tile.
+    var collapsed = collapseGroupTiles(group)
+    var packed = packedGeomsForApps(collapsed.tiles, (pref && pref.layout) || "dwindle", 1 / Math.max(1, (pref && pref.visibleCount) || 2))
     for (var g = 0; g < group.length; g++) {
         if (assignmentHasGeom(group[g])) continue
-        var pg = packed[g]
+        var pg = packed[collapsed.owner[g]]
         if (!pg) continue
         list[idxs[g]].geom = { x: pg.x, y: pg.y, w: pg.w, h: pg.h }
     }

@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr, collapseGroupTiles, groupPreviewTiles }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -495,6 +495,99 @@ if (!withChrome.chrome || withChrome.chrome.opacityActive !== 0.5 || withChrome.
 const noChrome = m.normalizeAssignment({ workspace: 2, exec: "foot" })
 if (noChrome.chrome) throw new Error("default chrome omitted")
 
+// A captured group token has to survive normalization: capture writes `group`
+// (and `groupActive` on the tab that was on top), and apply rebuilds the group
+// from them. Dropping either here silently degrades a group into loose windows.
+const grouped = m.normalizeAssignment({ workspace: 10, exec: "foot", group: "g2", groupActive: true })
+if (grouped.group !== "g2") throw new Error("group token persists on assignment")
+if (grouped.groupActive !== true) throw new Error("groupActive persists on assignment")
+const groupedTab = m.normalizeAssignment({ workspace: 10, exec: "foot", group: "g2" })
+if (groupedTab.group !== "g2") throw new Error("group token persists without groupActive")
+if ("groupActive" in groupedTab) throw new Error("groupActive omitted when not the active tab")
+const ungrouped = m.normalizeAssignment({ workspace: 10, exec: "foot", groupActive: true })
+if ("group" in ungrouped || "groupActive" in ungrouped) throw new Error("groupActive alone is not a group")
+
+// The preview draws one pane per tile, so a group's non-representative members
+// are hidden and the representative carries a tab strip naming every member.
+const gpList = [
+  { id: "a", name: "WhatsApp", exec: "wa", group: "g2" },
+  { id: "b", name: "Telegram", exec: "tg", group: "g2", groupActive: true },
+  { id: "c", name: "Spotify", exec: "sp" }
+]
+const gp = m.groupPreviewTiles(gpList)
+if (gp.length !== 3) throw new Error("one preview entry per assignment")
+if (!gp[0] || gp[0].rep !== true) throw new Error("first group member represents the tile")
+if (gp[0].tabs.length !== 2) throw new Error("tab strip names every group member")
+if (gp[0].tabs[0].name !== "WhatsApp" || gp[0].tabs[1].name !== "Telegram") throw new Error("tabs keep capture order")
+if (gp[0].tabs[0].active !== false || gp[0].tabs[1].active !== true) throw new Error("groupActive marks the active tab")
+if (gp[0].active !== gpList[1]) throw new Error("representative exposes the active member")
+if (!gp[1] || gp[1].rep !== false) throw new Error("later group members are hidden")
+// Every member points at the pane that stands in for it, so a selection landing
+// on a hidden member can be redirected to the tile actually on screen.
+if (gp[0].repIndex !== 0 || gp[1].repIndex !== 0) throw new Error("members point at their representative")
+if (gp[2] !== null) throw new Error("ungrouped window has no preview entry")
+// With no groupActive anywhere the first member stands in, so the pane never
+// renders nameless.
+const gpNoActive = m.groupPreviewTiles([{ id: "a", name: "A", exec: "a", group: "g" }, { id: "b", name: "B", exec: "b", group: "g" }])
+if (gpNoActive[0].active !== null) throw new Error("no active member when none is marked")
+if (gpNoActive[0].tabs[0].active !== false) throw new Error("no tab is active when none is marked")
+// A floating window is never part of a tile group, matching collapseGroupTiles.
+const gpFloat = m.groupPreviewTiles([{ id: "a", name: "A", exec: "a", group: "g", place: "float" }, { id: "b", name: "B", exec: "b", group: "g" }])
+if (gpFloat[0] !== null) throw new Error("floating window is not grouped")
+// Dropping the float leaves one member, and a lone member is not a group —
+// the same rule scripts/capture applies when it refuses to emit a token.
+if (gpFloat[1] !== null) throw new Error("lone remaining member is not a group")
+const gpLone = m.groupPreviewTiles([{ id: "a", name: "A", exec: "a", group: "g" }])
+if (gpLone[0] !== null) throw new Error("single-member group is not a group")
+
+// Members of a group share one tile, so their geoms are identical by design.
+// Packing must read that as one tile rather than as an overlap, or the saved
+// layout is thrown away and replaced with an auto layout for one pane too many
+// — which also gets written back to disk the next time the panel opens.
+const gGrp = [
+  { id: "a", name: "WhatsApp", exec: "wa", group: "g2", geom: { x: 0, y: 0, w: 0.6, h: 1 } },
+  { id: "b", name: "Telegram", exec: "tg", group: "g2", groupActive: true, geom: { x: 0, y: 0, w: 0.6, h: 1 } },
+  { id: "c", name: "Spotify", exec: "sp", geom: { x: 0.6, y: 0, w: 0.4, h: 1 } }
+]
+const packedGrp = m.packedGeomsForApps(gGrp, "dwindle", 0.49)
+if (packedGrp.length !== 3) throw new Error("one geom per assignment")
+if (packedGrp[0].w !== 0.6 || packedGrp[0].h !== 1) throw new Error("group tile keeps its saved geom")
+if (packedGrp[1].x !== packedGrp[0].x || packedGrp[1].y !== packedGrp[0].y
+    || packedGrp[1].w !== packedGrp[0].w || packedGrp[1].h !== packedGrp[0].h)
+  throw new Error("group members share one tile")
+if (packedGrp[2].x !== 0.6 || packedGrp[2].w !== 0.4 || packedGrp[2].h !== 1)
+  throw new Error("the ungrouped window keeps the rest of the row")
+// A real overlap between separate tiles must still fall back to the auto layout.
+const gOverlap = m.packedGeomsForApps([
+  { id: "a", exec: "a", geom: { x: 0, y: 0, w: 0.8, h: 1 } },
+  { id: "b", exec: "b", geom: { x: 0.4, y: 0, w: 0.6, h: 1 } }
+], "dwindle", 0.49)
+if (gOverlap[0].w === 0.8) throw new Error("genuine overlap still falls back to auto layout")
+// Two windows in a group and nothing else fill the workspace as one tile.
+const gOnly = m.packedGeomsForApps([
+  { id: "a", exec: "a", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "b", exec: "b", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } }
+], "dwindle", 0.49)
+if (gOnly[0].w !== 1 || gOnly[1].w !== 1) throw new Error("a lone group tile fills the workspace")
+
+// Removing a window next to a group: the group is one tile, so it takes the
+// freed space as a whole and its members stay on identical geoms.
+const rmBase = [
+  { id: "a", workspace: 1, exec: "a", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "b", workspace: 1, exec: "b", group: "g", geom: { x: 0, y: 0, w: 0.5, h: 1 } },
+  { id: "c", workspace: 1, exec: "c", geom: { x: 0.5, y: 0, w: 0.5, h: 1 } }
+]
+const rmC = m.removeAppAndFill(rmBase, "c")
+if (rmC.length !== 2) throw new Error("removing a window drops exactly one entry")
+if (rmC[0].geom.w !== 1 || rmC[1].geom.w !== 1) throw new Error("the group tile absorbs the freed space")
+if (rmC[0].geom.x !== rmC[1].geom.x || rmC[0].geom.w !== rmC[1].geom.w)
+  throw new Error("group members still share one tile after a removal")
+// Removing one tab leaves the tile occupied by the others, so nothing moves.
+const rmB = m.removeAppAndFill(rmBase, "b")
+if (rmB.length !== 2) throw new Error("removing a tab drops exactly one entry")
+if (rmB[0].geom.w !== 0.5 || rmB[1].geom.x !== 0.5)
+  throw new Error("removing one tab of a group leaves the layout alone")
+
 const isoCfg = m.sanitizeConfig({
   version: 2,
   profiles: [{
@@ -687,5 +780,22 @@ if (m.workspaceForcesBlock({ assignments: shaped, workspacePrefs: { "1": { layou
 const twoLockEffKeep = m.effectiveWorkspacePref({ assignments: shaped, workspacePrefs: { "1": { layout: "scrolling", extras: "around" } } }, 1)
 if (twoLockEffKeep.layout !== "dwindle" || twoLockEffKeep.extras !== "block")
   throw new Error("two lock still dwindle+block for apply")
+
+// A Hyprland group is one tile: the preview packs one pane per group.
+const groupApps = [
+  { id: "t", workspace: 1, exec: "telegram", name: "Telegram", group: "g1" },
+  { id: "s", workspace: 1, exec: "signal", name: "Signal", group: "g1" },
+  { id: "m", workspace: 1, exec: "spotify", name: "Spotify" }
+]
+const col = m.collapseGroupTiles(groupApps)
+if (col.tiles.length !== 2) throw new Error("group collapses to one tile")
+if (col.owner.join(",") !== "0,0,1") throw new Error("both members map to the same tile")
+const groupChip = m.chipGeomsForWorkspace({ assignments: groupApps, workspacePrefs: {} }, 1)
+if (groupChip.length !== 2) throw new Error("chip draws one pane per group, not per window")
+const geomed = m.ensureAssignmentGeoms(groupApps.map(a => Object.assign({}, a)), 1, { layout: "dwindle" })
+if (JSON.stringify(geomed[0].geom) !== JSON.stringify(geomed[1].geom))
+  throw new Error("group members must share their tile geom")
+if (JSON.stringify(geomed[1].geom) === JSON.stringify(geomed[2].geom))
+  throw new Error("the ungrouped window keeps its own tile")
 
 console.log("model.test.js ok")

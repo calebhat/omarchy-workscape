@@ -137,7 +137,9 @@ Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 
 **Capture WS** snapshots whatever is open on this workspace into the profile: the exact on-screen split ratios, size/place, terminal working directory (from the shell child of `foot` / Ghostty), and a URL when Hyprland exposes it (Brave *web apps* encode the site in the window class; a normal Brave tab only has the page title — that URL cannot be read). Two or more tiled windows are locked to those ratios. Apps without a `.desktop` file (TUIs) need a desktop entry or WorkScape **extraApps** in config.
 
-**What can be saved per window:** exec, name, class, title, tile vs float, geometry, opacity/borders, lock, **cwd** (terminals), **url** (web apps / explicit `https://` in the command). Not available: the URL of an ordinary browser tab, scroll position, cookies/login, tmux sessions, SSH remote cwd unless it is the local shell.
+**What can be saved per window:** exec, name, class, title, tile vs float, geometry, opacity/borders, lock, **group** (Hyprland window groups), **cwd** (terminals), **url** (web apps / explicit `https://` in the command). Not available: the URL of an ordinary browser tab, scroll position, cookies/login, tmux sessions, SSH remote cwd unless it is the local shell.
+
+**Groups.** A Hyprland window group is one tile shared by several windows, switched with the groupbar (Omarchy binds `SUPER+G` to make one and `SUPER+TAB` to cycle). **Capture WS** records which windows were grouped, their tab order, and which tab was on top; **Apply** puts them back into a group in that order. The group counts as a single pane everywhere else — the split, the mini preview and the organizer lay out one pane per group, not per window — so a workspace holding a two-window group plus one other window is a two-pane split. Group them in Hyprland the way you already do; WorkScape does not add its own grouping controls. A group needs two of its windows present to be rebuilt, and a group of one is stored as an ordinary tile.
 
 **Layouts** (per workspace)
 
