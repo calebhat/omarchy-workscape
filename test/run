@@ -18,6 +18,7 @@ python3 test/network.test.py
 bash test/set-output.test.sh
 python3 test/monitorsettle.test.py
 python3 test/dockid.test.py
+python3 test/monitorslua.test.py
 bash test/match.test.sh
 bash test/reuse.test.sh
 bash test/occupied.test.sh

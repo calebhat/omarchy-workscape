@@ -228,6 +228,9 @@ cmd_set_profile_output() {
 
   local conn="" live_scale="" live_mode=""
   conn=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --connector-for "$monitor_id" 2>/dev/null | tr -d '\n')
+  # Persist as config BEFORE touching the live output: querying monitors
+  # mid-reconfiguration can briefly resolve no connectors at all.
+  write_monitors_lua_block "$profile_id"
   if [[ -n $conn ]]; then
     [[ -n $scale && $scale != "auto" ]] && live_scale=$scale
     [[ -n $mode_json ]] && live_mode=$mode
@@ -242,6 +245,42 @@ cmd_set_profile_output() {
   [[ -n $fp ]] && state_put last_auto_fp "$fp"
   [[ -n $matched ]] && state_put last_auto_profile "$matched"
   echo "saved $monitor_id for $profile_id (scale=${scale:-keep} mode=${mode:-keep})"
+}
+
+# Persist the profile's scale-pinned outputs as real Hyprland config, inside
+# the marked block this plugin owns in monitors.lua. Reloads and omarchy's
+# internal-panel watcher then agree with the runtime instead of reverting it.
+write_monitors_lua_block() {
+  local profile_id=$1
+  local rows rule mode scale conn rules=""
+  rows=$(jq_config -r --arg id "$profile_id" '
+    [.profiles[] | select(.id == $id)][0] as $p |
+    ($p.monitors // [])[] as $mid |
+    ($p.monitorScales[$mid] // empty) as $sc |
+    select($sc != null) |
+    [$mid,
+     (if $p.monitorModes[$mid] then
+        "\($p.monitorModes[$mid].width)x\($p.monitorModes[$mid].height)@\($p.monitorModes[$mid].refreshRate)"
+      else "preferred" end),
+     (if $p.monitorLayout[$mid] and $p.monitorLayout[$mid].x != null then
+        "\($p.monitorLayout[$mid].x)x\($p.monitorLayout[$mid].y)"
+      else "auto" end),
+     ($sc | tostring)] | @tsv' 2>/dev/null || true)
+  while IFS=$'\t' read -r conn mode pos scale; do
+    [[ -n $conn ]] || continue
+    [[ $conn =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || continue
+    [[ $conn != *HEADLESS* ]] || continue
+    [[ $scale =~ ^[0-9]\.?[0-9]{0,2}$ ]] || continue
+    [[ $mode == "preferred" || $mode =~ ^([0-9]{3,5})x([0-9]{3,5})@[0-9]{1,3}(\.[0-9]{1,3})?$ ]] || mode="preferred"
+    [[ $pos =~ ^-?[0-9]+x-?[0-9]+$ ]] || pos="auto"
+    # The rule must name the live connector, so resolve the saved monitor id.
+    local live_conn=""
+    live_conn=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --connector-for "$conn" 2>/dev/null | tr -d '\n')
+    [[ $live_conn =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || continue
+    rule=$(printf 'hl.monitor({ output = "%s", mode = "%s", position = "%s", scale = %s })' "$live_conn" "$mode" "$pos" "$scale")
+    rules="${rules:+$rules;}$rule"
+  done <<< "$rows"
+  python3 "$PLUGIN_DIR/scripts/monitorslua" --write "$rules" >/dev/null || true
 }
 
 cmd_apply_on_monitor_change() {
@@ -1218,6 +1257,7 @@ cmd_apply() {
     export WORKSCAPE_MIGRATE_OCCUPIED=1
     echo "profile changed (${last_applied:-none} → $profile_id) — moving occupied workspaces onto this layout"
   fi
+  write_monitors_lua_block "$profile_id"
   local ws_snap
   ws_snap=$(snapshot_workspaces)
   apply_profile_outputs "$profile_id"
@@ -1435,7 +1475,7 @@ case "${1:-}" in
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
   --capture-workspace) python3 "$PLUGIN_DIR/scripts/capture" --workspace "${2:-1}" ;;
   --apply-gestures) python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${2:-}" --apply ;;
-  --restore-hypr) python3 "$GESTURES" --restore-hypr ;;
+  --restore-hypr) python3 "$GESTURES" --restore-hypr; python3 "$PLUGIN_DIR/scripts/monitorslua" --clear ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
 workscape.sh — helper for io.github.calebhat.workscape
