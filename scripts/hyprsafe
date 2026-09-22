@@ -28,12 +28,15 @@ MAX_PROC_FILE = 4096
 MAX_EVENT_LINE = 4096
 STATE_NAMES = frozenset({
     "config.json",
+    "config.json.bak",
     "apply.lock",
     "apply.pid",
     "apply.log",
     "last-swipe-fingers",
     "last_boot_id",
     "last_applied_profile",
+    "last_auto_fp",
+    "last_auto_profile",
     "workscape-gestures.lua",
     "workscape-hotkeys.lua",
     "hypr-owned.json",

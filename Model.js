@@ -9,6 +9,8 @@ function defaultConfig() {
         settings: {
             enabled: true,
             applyOnBoot: false,
+            applyOnMonitorChange: false,
+            applyOnShellRestart: false,
             launchDelayMs: 800,
             staggerMs: 80,
             silent: true,
@@ -36,6 +38,8 @@ function defaultProfile() {
         workspaceMonitors: {},
         disabledMonitors: [],
         monitorLayout: {},
+        monitorScales: {},
+        monitorModes: {},
         workspacePrefs: {},
         assignments: [],
         gestures: defaultGestures(),
@@ -43,6 +47,8 @@ function defaultProfile() {
         defaultWorkspace: 0,
         persistentWorkspaces: false,
         network: emptyNetwork(),
+        docks: [],
+        dockLabels: {},
         overflow: emptyOverflow(),
         claimedAt: 0
     }
@@ -378,6 +384,8 @@ function applyHint(cfg, profile, liveList, liveNet, liveStatus) {
                 match.detail = liveStatus.profiles[i].detail || match.detail
                 match.networkConstrained = liveStatus.profiles[i].networkConstrained
                 match.networkMatches = liveStatus.profiles[i].networkMatches
+                match.dockConstrained = liveStatus.profiles[i].dockConstrained
+                match.dockMatches = liveStatus.profiles[i].dockMatches
                 break
             }
         }
@@ -820,6 +828,99 @@ function normalizeMonitorLayout(raw) {
     return out
 }
 
+function normalizeMonitorScales(raw, knownIds) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw).slice(0, 8)
+    for (var i = 0; i < keys.length; i++) {
+        var id = String(keys[i] || "").slice(0, 40)
+        if (!id) continue
+        if (knownIds && knownIds.length && knownIds.indexOf(id) < 0) continue
+        var n = Number(raw[keys[i]])
+        if (!isFinite(n)) continue
+        out[id] = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100
+    }
+    return out
+}
+
+function normalizeMonitorModes(raw, knownIds) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw).slice(0, 8)
+    for (var i = 0; i < keys.length; i++) {
+        var id = String(keys[i] || "").slice(0, 40)
+        if (!id) continue
+        if (knownIds && knownIds.length && knownIds.indexOf(id) < 0) continue
+        var m = raw[keys[i]]
+        if (!m || typeof m !== "object") continue
+        var w = parseInt(m.width, 10)
+        var h = parseInt(m.height, 10)
+        var r = Number(m.refreshRate)
+        if (!(w >= 256 && w <= 15360)) continue
+        if (!(h >= 256 && h <= 15360)) continue
+        if (!(r > 0)) r = 60
+        out[id] = {
+            width: w,
+            height: h,
+            refreshRate: Math.round(Math.max(20, Math.min(480, r)) * 100) / 100
+        }
+    }
+    return out
+}
+
+function parseModeString(s) {
+    var hit = /^(\d+)x(\d+)@([\d.]+?)(?:Hz)?$/i.exec(String(s || "").trim())
+    if (!hit) return null
+    var r = Number(hit[3])
+    return { width: parseInt(hit[1], 10), height: parseInt(hit[2], 10), refreshRate: r > 0 ? r : 60 }
+}
+
+function normalizeDocks(raw) {
+    var out = []
+    if (!Array.isArray(raw)) return out
+    for (var i = 0; i < raw.length && out.length < 4; i++) {
+        var d = String(raw[i] || "").trim().slice(0, 120)
+        if (d && out.indexOf(d) < 0) out.push(d)
+    }
+    return out
+}
+
+function normalizeDockLabels(raw, docks) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw).slice(0, 8)
+    for (var i = 0; i < keys.length; i++) {
+        var id = String(keys[i] || "").slice(0, 120)
+        if (!id || (docks && docks.indexOf(id) < 0)) continue
+        out[id] = String(raw[keys[i]] || "").slice(0, 64)
+    }
+    return out
+}
+
+function dockBound(profile) {
+    return normalizeDocks(profile && profile.docks)
+}
+
+function dockConnected(profile, liveStatus) {
+    var docks = dockBound(profile)
+    var connected = (liveStatus && liveStatus.docks) || []
+    for (var i = 0; i < docks.length; i++) {
+        if (connected.indexOf(docks[i]) >= 0) return true
+    }
+    return false
+}
+
+function boundDockLine(profile, liveStatus) {
+    var docks = dockBound(profile)
+    if (!docks.length) return ""
+    var labels = (profile && profile.dockLabels) || {}
+    var parts = []
+    for (var i = 0; i < docks.length; i++) {
+        parts.push(String(labels[docks[i]] || docks[i]).slice(0, 48))
+    }
+    return "Dock: " + parts.join(", ") + (dockConnected(profile, liveStatus) ? " · connected" : " · not connected")
+}
+
 function rectsOverlap(a, b) {
     if (!a || !b) return false
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
@@ -1109,11 +1210,12 @@ function snapLayoutRect(dragged, others, thresh) {
     return placeMonitorNoOverlap(dragged, others)
 }
 
-function liveLogicalSize(live) {
-    var scale = Number(live && live.scale) || 1
+function liveLogicalSize(live, scaleOverride, modeOverride) {
+    var scale = Number(scaleOverride)
+    if (!(scale > 0)) scale = Number(live && live.scale) || 1
     if (scale <= 0) scale = 1
-    var w = Number(live && live.width) || 1920
-    var h = Number(live && live.height) || 1080
+    var w = (modeOverride && Number(modeOverride.width)) || Number(live && live.width) || 1920
+    var h = (modeOverride && Number(modeOverride.height)) || Number(live && live.height) || 1080
     return { w: Math.max(200, Math.round(w / scale)), h: Math.max(200, Math.round(h / scale)) }
 }
 
@@ -1130,7 +1232,9 @@ function monitorLayoutTiles(cfg, profile, liveList) {
         var id = ids[i]
         var saved = monitorById(cfg, id)
         var hit = findLive(saved, live)
-        var size = hit ? liveLogicalSize(hit) : { w: 1920, h: 1080 }
+        var size = hit
+            ? liveLogicalSize(hit, (profile.monitorScales || {})[id], (profile.monitorModes || {})[id])
+            : { w: 1920, h: 1080 }
         var pos = layout[id]
         var x = pos ? pos.x : (hit ? Number(hit.x) || 0 : i * (size.w + 32))
         var y = pos ? pos.y : (hit ? Number(hit.y) || 0 : 0)
@@ -2276,6 +2380,8 @@ function normalizeProfile(p, monitorIds) {
             return off
         })(),
         monitorLayout: normalizeMonitorLayout(p.monitorLayout),
+        monitorScales: normalizeMonitorScales(p.monitorScales, mons),
+        monitorModes: normalizeMonitorModes(p.monitorModes, mons),
         workspacePrefs: migrateWorkspacePrefs(normalizeWorkspacePrefs(p.workspacePrefs), assignments),
         assignments: assignments,
         gestures: normalizeGestures(p.gestures),
@@ -2288,6 +2394,11 @@ function normalizeProfile(p, monitorIds) {
         persistentWorkspaces: p.persistentWorkspaces === true,
         overflow: normalizeOverflow(p.overflow),
         network: normalizeNetwork(p.network),
+        docks: normalizeDocks(p.docks),
+        dockLabels: (function() {
+            var docks = normalizeDocks(p.docks)
+            return normalizeDockLabels(p.dockLabels, docks)
+        })(),
         claimedAt: (function() {
             var n = parseInt(p.claimedAt, 10)
             return n > 0 ? n : 0
@@ -2300,6 +2411,8 @@ function migrateV1(cfg) {
     if (cfg.settings && typeof cfg.settings === "object") {
         out.settings.enabled = cfg.settings.enabled !== false
         out.settings.applyOnBoot = cfg.settings.applyOnBoot === true
+        out.settings.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
+        out.settings.applyOnShellRestart = cfg.settings.applyOnShellRestart === true
         out.settings.launchDelayMs = Math.max(0, Math.min(10000, parseInt(cfg.settings.launchDelayMs) || 800))
         out.settings.staggerMs = Math.max(0, Math.min(2000, parseInt(cfg.settings.staggerMs) || 80))
         out.settings.silent = cfg.settings.silent !== false
@@ -2325,6 +2438,8 @@ function sanitizeConfig(cfg) {
     if (cfg.settings && typeof cfg.settings === "object") {
         out.settings.enabled = cfg.settings.enabled !== false
         out.settings.applyOnBoot = cfg.settings.applyOnBoot === true
+        out.settings.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
+        out.settings.applyOnShellRestart = cfg.settings.applyOnShellRestart === true
         out.settings.launchDelayMs = Math.max(0, Math.min(10000, parseInt(cfg.settings.launchDelayMs) || 800))
         out.settings.staggerMs = Math.max(0, Math.min(2000, parseInt(cfg.settings.staggerMs) || 80))
         out.settings.silent = cfg.settings.silent !== false
@@ -2489,7 +2604,7 @@ function bestProfile(cfg, liveList, liveNet) {
         scored.push({
             profile: list[i],
             info: info,
-            netBoost: info.networkConstrained && info.networkMatches ? 2 : 1,
+            netBoost: (info.networkConstrained && info.networkMatches) || (info.dockConstrained && info.dockMatches) ? 2 : 1,
             exactBoost: info.exact ? 2 : 1,
             claimed: Number(list[i].claimedAt) || 0
         })
@@ -2620,6 +2735,55 @@ function upsertLiveMonitor(cfg, live) {
     }
     out.monitors = out.monitors.concat([mon])
     return { config: out, id: mon.id }
+}
+
+function captureLiveMonitorIntoProfile(cfg, profileId, live) {
+    var up = upsertLiveMonitor(cfg, live)
+    if (!up.id) return { config: cfg, id: "" }
+    for (var i = 0; i < up.config.profiles.length; i++) {
+        var p = up.config.profiles[i]
+        if (p.id !== profileId) continue
+        var mons = p.monitors || []
+        if (mons.indexOf(up.id) < 0 && mons.length < 8) p.monitors = mons.concat([up.id])
+    }
+    return up
+}
+
+function profileDisplayRows(cfg, profile, liveList) {
+    var rows = []
+    var live = liveList || []
+    var ids = (profile && profile.monitors) || []
+    var claimed = {}
+    for (var i = 0; i < ids.length; i++) {
+        var saved = monitorById(cfg, ids[i])
+        var hit = findLive(saved, live)
+        if (hit) claimed[String(hit.name || hit.description)] = true
+        rows.push({
+            id: String(ids[i]),
+            label: saved ? saved.label : String(ids[i]),
+            live: hit,
+            pending: false
+        })
+    }
+    // Every connected display the profile does not know about still gets a
+    // row — the laptop's built-in panel on a fresh profile, a hotel HDMI on
+    // an exact desk layout. Picking a scale or mode adopts it.
+    var seen = {}
+    for (var l = 0; l < live.length; l++) {
+        if (!liveIsReal(live[l])) continue
+        var key = String(live[l].name || live[l].description)
+        if (!key || claimed[key]) continue
+        var mon = normalizeMonitor(live[l])
+        if (!mon || seen[mon.id]) continue
+        seen[mon.id] = true
+        rows.push({
+            id: mon.id,
+            label: mon.label || shortMonitorLabel(live[l]),
+            live: live[l],
+            pending: true
+        })
+    }
+    return rows
 }
 
 function extractWebappUrl(s) {

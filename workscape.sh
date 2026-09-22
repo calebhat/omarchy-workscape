@@ -148,6 +148,194 @@ cmd_match_id() {
   live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --print-id
 }
 
+# Direct control-surface hook: set one output's scale and/or mode in place.
+# Empty args keep the current value; position never moves.
+cmd_set_output() {
+  local conn=$1 scale=${2:-} mode=${3:-}
+  [[ $conn =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || { echo "bad connector: $conn" >&2; return 1; }
+  [[ $conn != *HEADLESS* ]] || { echo "no headless outputs" >&2; return 1; }
+  local mon
+  mon=$(live_monitors_json | jq -c --arg n "$conn" '[.[] | select(.name==$n)][0] // empty')
+  [[ -n $mon ]] || { echo "monitor not found: $conn" >&2; return 1; }
+  local w h r sc x y
+  w=$(printf '%s' "$mon" | jq -r '.width // 0')
+  h=$(printf '%s' "$mon" | jq -r '.height // 0')
+  r=$(printf '%s' "$mon" | jq -r '.refreshRate // 60')
+  sc=$(printf '%s' "$mon" | jq -r '.scale // 1')
+  x=$(printf '%s' "$mon" | jq -r '.x // 0')
+  y=$(printf '%s' "$mon" | jq -r '.y // 0')
+  if [[ -n $mode ]]; then
+    if [[ $mode =~ ^([0-9]{3,5})x([0-9]{3,5})@([0-9]{1,3}(\.[0-9]{1,3})?)$ ]]; then
+      w=${BASH_REMATCH[1]}
+      h=${BASH_REMATCH[2]}
+      r=${BASH_REMATCH[3]}
+    else
+      echo "bad mode: $mode" >&2
+      return 1
+    fi
+  fi
+  if [[ -n $scale ]]; then
+    [[ $scale =~ ^[0-9]\.?[0-9]{0,2}$ ]] || { echo "bad scale: $scale" >&2; return 1; }
+    sc=$scale
+  fi
+  (( w > 0 && h > 0 )) || { echo "monitor has no mode: $conn" >&2; return 1; }
+  local hz
+  hz=$(printf '%.2f' "$r" | sed -e 's/0*$//' -e 's/\.$//')
+  timeout 3 hyprctl eval "$(printf 'hl.monitor({ output = "%s", mode = "%sx%s@%s", position = "%sx%s", scale = %s })' "$conn" "$w" "$h" "$hz" "$x" "$y" "$sc")" </dev/null >/dev/null 2>&1 || true
+  echo "set $conn ${w}x${h}@${hz} scale=${sc} pos=${x}x${y}"
+}
+
+# Dropdown path: pin the value in the profile, set it live, and re-arm the
+# scan guard — one serialized writer so the 30s scan can never enforce a
+# pre-edit config snapshot over a change that is already on screen.
+cmd_set_profile_output() {
+  local profile_id=$1 monitor_id=$2 scale=${3:-} mode=${4:-}
+  [[ $profile_id =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad profile id" >&2; return 1; }
+  [[ $monitor_id =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad monitor id" >&2; return 1; }
+  ensure_config || return 1
+  exec 9>>"$STATE_DIR/apply.lock"
+  flock 9
+
+  local mode_json=""
+  if [[ -n $mode && $mode != "auto" ]]; then
+    if [[ $mode =~ ^([0-9]{3,5})x([0-9]{3,5})@([0-9]{1,3}(\.[0-9]{1,3})?)$ ]]; then
+      mode_json="{\"width\":${BASH_REMATCH[1]},\"height\":${BASH_REMATCH[2]},\"refreshRate\":${BASH_REMATCH[3]}}"
+    else
+      echo "bad mode: $mode" >&2
+      return 1
+    fi
+  fi
+  local scale_set="" mode_set=""
+  if [[ -n $scale && $scale != "auto" ]]; then
+    [[ $scale =~ ^[0-9]\.?[0-9]{0,2}$ ]] || { echo "bad scale: $scale" >&2; return 1; }
+    scale_set=".monitorScales[\$mid] = ($scale)"
+  elif [[ $scale == "auto" ]]; then
+    scale_set="del(.monitorScales[\$mid])"
+  fi
+  if [[ -n $mode_json ]]; then
+    mode_set=".monitorModes[\$mid] = ($mode_json)"
+  elif [[ $mode == "auto" ]]; then
+    mode_set="del(.monitorModes[\$mid])"
+  fi
+  local mutation="${scale_set}${mode_set}"
+  [[ -n $mutation ]] || { echo "nothing to set" >&2; return 1; }
+  if ! read_config | jq --arg id "$profile_id" --arg mid "$monitor_id" \
+      ".profiles |= map(if .id == \$id then ($mutation) else . end)" \
+      | python3 "$STATEIO" write-config >/dev/null; then
+    echo "config write failed" >&2
+    return 1
+  fi
+
+  local conn="" live_scale="" live_mode=""
+  conn=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --connector-for "$monitor_id" 2>/dev/null | tr -d '\n')
+  # Persist as config BEFORE touching the live output: querying monitors
+  # mid-reconfiguration can briefly resolve no connectors at all.
+  write_monitors_lua_block "$profile_id"
+  if [[ -n $conn ]]; then
+    [[ -n $scale && $scale != "auto" ]] && live_scale=$scale
+    [[ -n $mode_json ]] && live_mode=$mode
+    cmd_set_output "$conn" "$live_scale" "$live_mode" || true
+  fi
+
+  # Re-arm the scan guard so the settled, just-set state is the baseline.
+  local settle fp matched
+  settle=$(python3 "$PLUGIN_DIR/scripts/monitorsettle" --wait --timeout 4 2>/dev/null || true)
+  fp=$(printf '%s' "$settle" | jq -r '.fingerprint // empty' 2>/dev/null || true)
+  matched=$(cmd_match_id 2>/dev/null | tr -d '\n')
+  [[ -n $fp ]] && state_put last_auto_fp "$fp"
+  [[ -n $matched ]] && state_put last_auto_profile "$matched"
+  echo "saved $monitor_id for $profile_id (scale=${scale:-keep} mode=${mode:-keep})"
+}
+
+# Persist the profile's scale-pinned outputs as real Hyprland config, inside
+# the marked block this plugin owns in monitors.lua. Reloads and omarchy's
+# internal-panel watcher then agree with the runtime instead of reverting it.
+write_monitors_lua_block() {
+  local profile_id=$1
+  local rows rule mode scale conn rules=""
+  rows=$(jq_config -r --arg id "$profile_id" '
+    [.profiles[] | select(.id == $id)][0] as $p |
+    ($p.monitors // [])[] as $mid |
+    ($p.monitorScales[$mid] // empty) as $sc |
+    select($sc != null) |
+    [$mid,
+     (if $p.monitorModes[$mid] then
+        "\($p.monitorModes[$mid].width)x\($p.monitorModes[$mid].height)@\($p.monitorModes[$mid].refreshRate)"
+      else "preferred" end),
+     (if $p.monitorLayout[$mid] and $p.monitorLayout[$mid].x != null then
+        "\($p.monitorLayout[$mid].x)x\($p.monitorLayout[$mid].y)"
+      else "auto" end),
+     ($sc | tostring)] | @tsv' 2>/dev/null || true)
+  while IFS=$'\t' read -r conn mode pos scale; do
+    [[ -n $conn ]] || continue
+    [[ $conn =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || continue
+    [[ $conn != *HEADLESS* ]] || continue
+    [[ $scale =~ ^[0-9]\.?[0-9]{0,2}$ ]] || continue
+    [[ $mode == "preferred" || $mode =~ ^([0-9]{3,5})x([0-9]{3,5})@[0-9]{1,3}(\.[0-9]{1,3})?$ ]] || mode="preferred"
+    [[ $pos =~ ^-?[0-9]+x-?[0-9]+$ ]] || pos="auto"
+    # The rule must name the live connector, so resolve the saved monitor id.
+    local live_conn=""
+    live_conn=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --connector-for "$conn" 2>/dev/null | tr -d '\n')
+    [[ $live_conn =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || continue
+    rule=$(printf 'hl.monitor({ output = "%s", mode = "%s", position = "%s", scale = %s })' "$live_conn" "$mode" "$pos" "$scale")
+    rules="${rules:+$rules;}$rule"
+  done <<< "$rows"
+  python3 "$PLUGIN_DIR/scripts/monitorslua" --write "$rules" >/dev/null || true
+}
+
+cmd_apply_on_monitor_change() {
+  # Event + periodic scan body: settle, match, and apply at most what changed.
+  # --force bypasses the unchanged guard (shell-restart re-apply).
+  local force=""
+  [[ ${1:-} == "--force" ]] && force=1
+  ensure_config || exit 1
+  wait_for_hyprland || exit 1
+  local settle fp matched new_matched rounds=0
+  settle=$(python3 "$PLUGIN_DIR/scripts/monitorsettle" --wait --timeout 12 2>/dev/null || true)
+  fp=$(printf '%s' "$settle" | jq -r '.fingerprint // empty' 2>/dev/null || true)
+  if [[ -z $fp ]]; then
+    echo "no monitor fingerprint — skipping"
+    exit 0
+  fi
+  matched=$(cmd_match_id 2>/dev/null | tr -d '\n')
+  if [[ -z $matched ]]; then
+    echo "no profile matches the current displays — nothing to do"
+    exit 0
+  fi
+  local last_fp last_profile
+  last_fp=$(state_get last_auto_fp | tr -d '\n')
+  last_profile=$(state_get last_auto_profile | tr -d '\n')
+  if [[ -z $force && $fp == "$last_fp" && $matched == "$last_profile" ]]; then
+    echo "display set unchanged (profile $matched) — skipping"
+    exit 0
+  fi
+  while :; do
+    rounds=$((rounds + 1))
+    echo "auto-apply: displays settled → profile $matched (round $rounds)"
+    cmd_sync_active_profile >/dev/null || true
+    # Subshell: cmd_apply execs into the isolated apply; the scan must survive
+    # to re-check the display set and record the guard state afterwards.
+    ( WORKSCAPE_APPLY_ARGV=(--apply-profile "$matched")
+      cmd_apply hotkey "$matched" true ) || true
+    # Another display can land mid-apply; re-settle briefly and re-check.
+    settle=$(python3 "$PLUGIN_DIR/scripts/monitorsettle" --wait --timeout 4 2>/dev/null || true)
+    fp=$(printf '%s' "$settle" | jq -r '.fingerprint // empty' 2>/dev/null || true)
+    [[ -n $fp ]] || break
+    new_matched=$(cmd_match_id 2>/dev/null | tr -d '\n')
+    if [[ -z $new_matched || $new_matched == "$matched" ]]; then
+      matched=${new_matched:-$matched}
+      break
+    fi
+    matched=$new_matched
+    if (( rounds >= 3 )); then
+      echo "auto-apply: match still moving ($matched) — stopping after $rounds rounds"
+      break
+    fi
+  done
+  state_put last_auto_fp "$fp"
+  state_put last_auto_profile "$matched"
+}
+
 notify() {
   local title=$1 body=$2
   if command -v notify-send >/dev/null 2>&1; then
@@ -1072,6 +1260,7 @@ cmd_apply() {
     export WORKSCAPE_MIGRATE_OCCUPIED=1
     echo "profile changed (${last_applied:-none} → $profile_id) — moving occupied workspaces onto this layout"
   fi
+  write_monitors_lua_block "$profile_id"
   local ws_snap
   ws_snap=$(snapshot_workspaces)
   apply_profile_outputs "$profile_id"
@@ -1271,6 +1460,11 @@ case "${1:-}" in
   --status) cmd_status ;;
   --live-status) cmd_live_status ;;
   --sync-active-profile) cmd_sync_active_profile ;;
+  --set-output) shift; cmd_set_output "$@" ;;
+  --set-profile-output) shift; cmd_set_profile_output "$@" ;;
+  --apply-on-monitor-change) shift; cmd_apply_on_monitor_change "$@" ;;
+  --list-docks) python3 "$PLUGIN_DIR/scripts/dockid" --list ;;
+  --capture-dock) python3 "$PLUGIN_DIR/scripts/dockid" --capture ;;
   --match-id) cmd_match_id ;;
   --launch) shift; cmd_launch "$@" ;;
   --launch-all) shift; cmd_launch_all "${1:-false}" ;;
@@ -1284,7 +1478,7 @@ case "${1:-}" in
   --watch-extras) exec python3 "$PLUGIN_DIR/scripts/watch" ;;
   --capture-workspace) python3 "$PLUGIN_DIR/scripts/capture" --workspace "${2:-1}" ;;
   --apply-gestures) python3 "$GESTURES" --config "$CONFIG_FILE" --profile-id "${2:-}" --apply ;;
-  --restore-hypr) python3 "$GESTURES" --restore-hypr ;;
+  --restore-hypr) python3 "$GESTURES" --restore-hypr; python3 "$PLUGIN_DIR/scripts/monitorslua" --clear ;;
   --default-config) default_config ;;
   --help|-h|"") cat <<'HELP'
 workscape.sh — helper for io.github.calebhat.workscape
@@ -1297,6 +1491,11 @@ workscape.sh — helper for io.github.calebhat.workscape
   --live-status                current monitors + matching profile
   --sync-active-profile        set settings.activeProfileId to the matching layout
   --match-id                   print matching profile id
+  --set-output <conn> [scale] [WxH@Hz]  set one live output now (empty args keep current)
+  --set-profile-output <profile> <mon> <scale|auto> [WxH@Hz|auto]  pin+set+re-arm in one
+  --apply-on-monitor-change    wait for displays to settle, then apply the matching profile (scan body)
+  --list-docks                 JSON of USB devices usable as dock bindings
+  --capture-dock               JSON of the best connected dock candidate (or null)
   --launch <ws> <exec> [silent]  launch single app on workspace
   --launch-all                 boot path (no-op unless applyOnBoot)
   --force-launch-all           launch matching profile regardless of boot flag

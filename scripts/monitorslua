@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Manage WorkScape's marked monitor-rule block in ~/.config/hypr/monitors.lua.
+
+Omarchy's clamshell watcher re-asserts the internal panel from the config
+file, and every `hyprctl reload` re-applies the catch-all to all outputs, so
+runtime scale/mode writes alone never survive. The app therefore persists the
+active profile's pinned outputs as real config — but only inside a marked
+block it owns; everything else in the file stays the user's.
+
+  --write 'RULE;RULE;...'   replace the block (empty string removes it)
+  --clear                   remove the block
+  --print                   show the current block rules
+
+Markers are plain lua comments, so an uninstalled WorkScape leaves inert
+lines at worst and `--restore-hypr` strips the block cleanly.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+from pathlib import Path
+
+BEGIN = "-- >>> workscape monitors (managed by io.github.calebhat.workscape; this block is rewritten by the plugin)"
+END = "-- <<< workscape monitors"
+
+_RULE_RE = re.compile(r"^hl\.monitor\(\{ output = \"(?P<output>[A-Za-z0-9._:-]+)\", mode = \"(?P<mode>[^\"]+)\", position = \"(?P<pos>auto|-?[0-9]+x-?[0-9]+)\", scale = (?P<scale>[0-9.]+) \}\)$")
+
+
+def monitors_lua_path() -> Path:
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return Path(config) / "hypr" / "monitors.lua"
+
+
+def parse_rules(spec: str) -> list[str]:
+    rules: list[str] = []
+    for raw in [part.strip() for part in (spec or "").split(";") if part.strip()]:
+        if not _RULE_RE.match(raw):
+            print(f"refusing unsafe monitor rule: {raw!r}", file=sys.stderr)
+            return []
+        rules.append(raw)
+    return rules
+
+
+def split_block(text: str) -> tuple[str, str, str]:
+    """(before, block-including-markers, after); block empty when absent."""
+    begin = text.find(BEGIN)
+    if begin < 0:
+        return text, "", ""
+    end = text.find(END, begin)
+    if end < 0:
+        # Unterminated block: treat the tail as the block so --clear heals it.
+        return text[:begin], text[begin:], ""
+    return text[:begin], text[begin : end + len(END)], text[end + len(END) :]
+
+
+def render_block(rules: list[str]) -> str:
+    if not rules:
+        return ""
+    lines = [BEGIN] + list(rules) + [END]
+    return "\n".join(lines) + "\n"
+
+
+def write(path: Path, rules: list[str]) -> None:
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    before, _block, after = split_block(text)
+    block = render_block(rules)
+    parts = [p for p in (before, block, after) if p]
+    body = "".join(parts)
+    if not body.endswith("\n"):
+        body += "\n"
+    tmp = path.with_name(path.name + ".workscape-tmp")
+    tmp.write_text(body, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def current_rules(path: Path) -> list[str]:
+    _, block, _ = split_block(path.read_text(encoding="utf-8") if path.exists() else "")
+    return [ln for ln in block.splitlines() if ln.startswith("hl.monitor(")]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="WorkScape managed monitor rules")
+    parser.add_argument("--write", default=None, help="semicolon-joined hl.monitor rules; empty removes the block")
+    parser.add_argument("--clear", action="store_true")
+    parser.add_argument("--print", dest="print_block", action="store_true")
+    parser.add_argument("--file", default="", help="alternate monitors.lua for tests")
+    args = parser.parse_args()
+    path = Path(args.file) if args.file else monitors_lua_path()
+    if args.print_block:
+        for rule in current_rules(path):
+            print(rule)
+        return 0
+    if args.clear:
+        write(path, [])
+        print("cleared")
+        return 0
+    if args.write is not None:
+        rules = parse_rules(args.write)
+        if args.write and not rules:
+            return 1
+        write(path, rules)
+        print(f"wrote {len(rules)} rule(s)")
+        return 0
+    print("nothing to do: pass --write, --clear, or --print", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

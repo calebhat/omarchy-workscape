@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Wait for the Hyprland monitor set to stop changing.
+
+A dock brings its displays up over several seconds (link training, MST), and
+Hyprland re-emits monitor events while modes settle. Matching a profile against
+that moving picture picks the wrong layout, which is why a manual Apply
+sometimes had to run twice. This waits until two consecutive monitor
+snapshots agree before anything matches or applies.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from typing import Any
+
+SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
+
+
+def _entry(m: dict[str, Any]) -> str:
+    name = str(m.get("name") or "")
+    if not name or "HEADLESS" in name:
+        return ""
+    try:
+        refresh = float(m.get("currentRefreshRate") or m.get("refreshRate") or 0)
+    except (TypeError, ValueError):
+        refresh = 0.0
+    try:
+        scale = float(m.get("scale") or 0)
+    except (TypeError, ValueError):
+        scale = 0.0
+    return "|".join(
+        (
+            name,
+            str(int(m.get("width") or 0)),
+            str(int(m.get("height") or 0)),
+            f"{refresh:.2f}",
+            f"{scale:.2f}",
+            "1" if m.get("disabled") else "0",
+        )
+    )
+
+
+def fingerprint(monitors: list[dict[str, Any]]) -> str:
+    entries = sorted(e for e in (_entry(m) for m in monitors or []) if e)
+    digest = hashlib.sha1("\n".join(entries).encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def live_monitors() -> list[dict[str, Any]]:
+    try:
+        return SAFE.hypr_json(["monitors", "all"])
+    except Exception:
+        return []
+
+
+def wait_stable(timeout: float = 12.0, interval: float = 0.7) -> dict[str, Any]:
+    prev = fingerprint(live_monitors())
+    rounds = 1
+    import time
+
+    deadline = time.monotonic() + max(1.0, timeout)
+    while time.monotonic() < deadline:
+        time.sleep(max(0.05, interval))
+        cur = fingerprint(live_monitors())
+        rounds += 1
+        if cur == prev:
+            return {"fingerprint": cur, "stable": True, "rounds": rounds}
+        prev = cur
+    return {"fingerprint": prev, "stable": False, "rounds": rounds}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Hyprland monitor settle for WorkScape")
+    parser.add_argument("--fingerprint", action="store_true", help="read monitors JSON on stdin, print fingerprint")
+    parser.add_argument("--wait", action="store_true", help="poll live monitors until two snapshots agree")
+    parser.add_argument("--timeout", type=float, default=12.0)
+    parser.add_argument("--interval", type=float, default=0.7)
+    args = parser.parse_args()
+    if args.fingerprint:
+        raw = sys.stdin.buffer.read(SAFE.MAX_HYPR_JSON + 1)
+        if len(raw) > SAFE.MAX_HYPR_JSON:
+            print("monitors JSON too large", file=sys.stderr)
+            return 1
+        try:
+            monitors = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            print("invalid monitors JSON", file=sys.stderr)
+            return 1
+        print(fingerprint(monitors if isinstance(monitors, list) else []))
+        return 0
+    if args.wait:
+        json.dump(wait_stable(timeout=args.timeout, interval=args.interval), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    print("nothing to do: pass --fingerprint or --wait", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
