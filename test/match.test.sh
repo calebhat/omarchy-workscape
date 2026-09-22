@@ -550,7 +550,8 @@ PY
 
 conn=$(python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-laptop.json" --connector-for laptop)
 [[ $conn == "eDP-1" ]] || { echo "connector-for laptop: $conn"; exit 1; }
-python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-laptop.json" --connector-for ghost >/dev/null 2>&1
-[[ $? -eq 3 ]] || { echo "connector-for ghost should miss"; exit 1; }
+ghost_rc=0
+python3 "$MATCH" --config "$TMP/config.json" --live-json "$TMP/live-laptop.json" --connector-for ghost >/dev/null 2>&1 || ghost_rc=$?
+[[ $ghost_rc -eq 3 ]] || { echo "connector-for ghost should miss: $ghost_rc"; exit 1; }
 echo "connector-for ok"
 echo "match.test.sh ok"
