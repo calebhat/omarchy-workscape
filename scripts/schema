@@ -476,6 +476,28 @@ def normalize_profile(p: Any, known_ids: list[str]) -> dict[str, Any]:
             off.append(mid)
     if len(mons) >= 1 and len(off) >= len(mons):
         off = off[: len(mons) - 1]
+    scales: dict[str, float] = {}
+    raw_scales = src.get("monitorScales") if isinstance(src.get("monitorScales"), dict) else {}
+    for k, v in list(raw_scales.items())[:MAX_PROFILE_MONITORS]:
+        mid = _s(k, 40).strip()
+        if not mid or mid not in mons:
+            continue
+        try:
+            scales[mid] = round(min(4.0, max(0.25, float(v))), 2)
+        except (TypeError, ValueError):
+            continue
+    modes: dict[str, dict[str, Any]] = {}
+    raw_modes = src.get("monitorModes") if isinstance(src.get("monitorModes"), dict) else {}
+    for k, v in list(raw_modes.items())[:MAX_PROFILE_MONITORS]:
+        mid = _s(k, 40).strip()
+        if not mid or mid not in mons or not isinstance(v, dict):
+            continue
+        w = _i(v.get("width"), 256, 15360, 0)
+        h = _i(v.get("height"), 256, 15360, 0)
+        hz = round(_f(v.get("refreshRate"), 20.0, 480.0, 0.0), 2)
+        if w <= 0 or h <= 0:
+            continue
+        modes[mid] = {"width": w, "height": h, "refreshRate": hz}
     return {
         "id": _s(src.get("id") or "pr", 40),
         "name": _s(src.get("name") or "Profile", 48),
@@ -484,6 +506,8 @@ def normalize_profile(p: Any, known_ids: list[str]) -> dict[str, Any]:
         "workspaceMonitors": wm,
         "disabledMonitors": off,
         "monitorLayout": layout,
+        "monitorScales": scales,
+        "monitorModes": modes,
         "workspacePrefs": prefs,
         "assignments": assignments,
         "gestures": normalize_gestures(src.get("gestures")),

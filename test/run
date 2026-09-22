@@ -15,6 +15,7 @@ python3 test/workscape_layout.test.py
 python3 test/hyprsafe.test.py
 python3 test/stateio.test.py
 python3 test/network.test.py
+bash test/set-output.test.sh
 bash test/match.test.sh
 bash test/reuse.test.sh
 bash test/occupied.test.sh

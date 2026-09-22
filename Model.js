@@ -36,6 +36,8 @@ function defaultProfile() {
         workspaceMonitors: {},
         disabledMonitors: [],
         monitorLayout: {},
+        monitorScales: {},
+        monitorModes: {},
         workspacePrefs: {},
         assignments: [],
         gestures: defaultGestures(),
@@ -820,6 +822,53 @@ function normalizeMonitorLayout(raw) {
     return out
 }
 
+function normalizeMonitorScales(raw, knownIds) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw).slice(0, 8)
+    for (var i = 0; i < keys.length; i++) {
+        var id = String(keys[i] || "").slice(0, 40)
+        if (!id) continue
+        if (knownIds && knownIds.length && knownIds.indexOf(id) < 0) continue
+        var n = Number(raw[keys[i]])
+        if (!isFinite(n)) continue
+        out[id] = Math.round(Math.max(0.25, Math.min(4, n)) * 100) / 100
+    }
+    return out
+}
+
+function normalizeMonitorModes(raw, knownIds) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw).slice(0, 8)
+    for (var i = 0; i < keys.length; i++) {
+        var id = String(keys[i] || "").slice(0, 40)
+        if (!id) continue
+        if (knownIds && knownIds.length && knownIds.indexOf(id) < 0) continue
+        var m = raw[keys[i]]
+        if (!m || typeof m !== "object") continue
+        var w = parseInt(m.width, 10)
+        var h = parseInt(m.height, 10)
+        var r = Number(m.refreshRate)
+        if (!(w >= 256 && w <= 15360)) continue
+        if (!(h >= 256 && h <= 15360)) continue
+        if (!(r > 0)) r = 60
+        out[id] = {
+            width: w,
+            height: h,
+            refreshRate: Math.round(Math.max(20, Math.min(480, r)) * 100) / 100
+        }
+    }
+    return out
+}
+
+function parseModeString(s) {
+    var hit = /^(\d+)x(\d+)@([\d.]+?)(?:Hz)?$/i.exec(String(s || "").trim())
+    if (!hit) return null
+    var r = Number(hit[3])
+    return { width: parseInt(hit[1], 10), height: parseInt(hit[2], 10), refreshRate: r > 0 ? r : 60 }
+}
+
 function rectsOverlap(a, b) {
     if (!a || !b) return false
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
@@ -1109,11 +1158,12 @@ function snapLayoutRect(dragged, others, thresh) {
     return placeMonitorNoOverlap(dragged, others)
 }
 
-function liveLogicalSize(live) {
-    var scale = Number(live && live.scale) || 1
+function liveLogicalSize(live, scaleOverride, modeOverride) {
+    var scale = Number(scaleOverride)
+    if (!(scale > 0)) scale = Number(live && live.scale) || 1
     if (scale <= 0) scale = 1
-    var w = Number(live && live.width) || 1920
-    var h = Number(live && live.height) || 1080
+    var w = (modeOverride && Number(modeOverride.width)) || Number(live && live.width) || 1920
+    var h = (modeOverride && Number(modeOverride.height)) || Number(live && live.height) || 1080
     return { w: Math.max(200, Math.round(w / scale)), h: Math.max(200, Math.round(h / scale)) }
 }
 
@@ -1130,7 +1180,9 @@ function monitorLayoutTiles(cfg, profile, liveList) {
         var id = ids[i]
         var saved = monitorById(cfg, id)
         var hit = findLive(saved, live)
-        var size = hit ? liveLogicalSize(hit) : { w: 1920, h: 1080 }
+        var size = hit
+            ? liveLogicalSize(hit, (profile.monitorScales || {})[id], (profile.monitorModes || {})[id])
+            : { w: 1920, h: 1080 }
         var pos = layout[id]
         var x = pos ? pos.x : (hit ? Number(hit.x) || 0 : i * (size.w + 32))
         var y = pos ? pos.y : (hit ? Number(hit.y) || 0 : 0)
@@ -2276,6 +2328,8 @@ function normalizeProfile(p, monitorIds) {
             return off
         })(),
         monitorLayout: normalizeMonitorLayout(p.monitorLayout),
+        monitorScales: normalizeMonitorScales(p.monitorScales, mons),
+        monitorModes: normalizeMonitorModes(p.monitorModes, mons),
         workspacePrefs: migrateWorkspacePrefs(normalizeWorkspacePrefs(p.workspacePrefs), assignments),
         assignments: assignments,
         gestures: normalizeGestures(p.gestures),
@@ -2620,6 +2674,55 @@ function upsertLiveMonitor(cfg, live) {
     }
     out.monitors = out.monitors.concat([mon])
     return { config: out, id: mon.id }
+}
+
+function captureLiveMonitorIntoProfile(cfg, profileId, live) {
+    var up = upsertLiveMonitor(cfg, live)
+    if (!up.id) return { config: cfg, id: "" }
+    for (var i = 0; i < up.config.profiles.length; i++) {
+        var p = up.config.profiles[i]
+        if (p.id !== profileId) continue
+        var mons = p.monitors || []
+        if (mons.indexOf(up.id) < 0 && mons.length < 8) p.monitors = mons.concat([up.id])
+    }
+    return up
+}
+
+function profileDisplayRows(cfg, profile, liveList) {
+    var rows = []
+    var live = liveList || []
+    var ids = (profile && profile.monitors) || []
+    var claimed = {}
+    for (var i = 0; i < ids.length; i++) {
+        var saved = monitorById(cfg, ids[i])
+        var hit = findLive(saved, live)
+        if (hit) claimed[String(hit.name || hit.description)] = true
+        rows.push({
+            id: String(ids[i]),
+            label: saved ? saved.label : String(ids[i]),
+            live: hit,
+            pending: false
+        })
+    }
+    // Every connected display the profile does not know about still gets a
+    // row — the laptop's built-in panel on a fresh profile, a hotel HDMI on
+    // an exact desk layout. Picking a scale or mode adopts it.
+    var seen = {}
+    for (var l = 0; l < live.length; l++) {
+        if (!liveIsReal(live[l])) continue
+        var key = String(live[l].name || live[l].description)
+        if (!key || claimed[key]) continue
+        var mon = normalizeMonitor(live[l])
+        if (!mon || seen[mon.id]) continue
+        seen[mon.id] = true
+        rows.push({
+            id: mon.id,
+            label: mon.label || shortMonitorLabel(live[l]),
+            live: live[l],
+            pending: true
+        })
+    }
+    return rows
 }
 
 function extractWebappUrl(s) {

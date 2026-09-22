@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr, collapseGroupTiles, groupPreviewTiles }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, normalizeMonitorScales, normalizeMonitorModes, parseModeString, profileDisplayRows, captureLiveMonitorIntoProfile, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr, collapseGroupTiles, groupPreviewTiles }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -799,3 +799,63 @@ if (JSON.stringify(geomed[1].geom) === JSON.stringify(geomed[2].geom))
   throw new Error("the ungrouped window keeps its own tile")
 
 console.log("model.test.js ok")
+
+if (m.defaultConfig().profiles[0].monitorScales === undefined) throw new Error("default profile has monitorScales")
+if (m.defaultConfig().profiles[0].monitorModes === undefined) throw new Error("default profile has monitorModes")
+const scaled = m.sanitizeConfig({
+  version: 2, settings: {},
+  monitors: [{ id: "laptop", label: "Laptop", serial: "", description: "BOE NE135A1M-NY1", name: "eDP-1" }],
+  profiles: [{
+    id: "p", name: "P", monitors: ["laptop"],
+    monitorScales: { laptop: 1.5, ghost: 2, junk: "nope" },
+    monitorModes: { laptop: { width: 2880, height: 1800, refreshRate: 120 }, ghost: { width: 1920, height: 1080 } }
+  }]
+})
+if (scaled.profiles[0].monitorScales.laptop !== 1.5) throw new Error("keep scale")
+if (scaled.profiles[0].monitorScales.ghost !== undefined) throw new Error("drop unknown monitor scale")
+if (scaled.profiles[0].monitorScales.junk !== undefined) throw new Error("drop junk scale")
+if (scaled.profiles[0].monitorModes.laptop.width !== 2880) throw new Error("keep mode")
+if (scaled.profiles[0].monitorModes.ghost !== undefined) throw new Error("drop unknown monitor mode")
+const clamped = m.normalizeMonitorScales({ a: 9, b: -1, c: 1.25 }, ["a", "b", "c"])
+if (clamped.a !== 4 || clamped.b !== 0.25 || clamped.c !== 1.25) throw new Error("clamp scales")
+const badMode = m.normalizeMonitorModes({ a: { width: 100, height: 1080, refreshRate: 60 }, b: { width: 1920, height: 1080 } }, ["a", "b"])
+if (badMode.a !== undefined) throw new Error("drop tiny mode")
+if (badMode.b.refreshRate !== 60) throw new Error("default refresh 60")
+const modeParsed = m.parseModeString("2880x1800@119.99Hz")
+if (!modeParsed || modeParsed.width !== 2880 || modeParsed.height !== 1800 || modeParsed.refreshRate !== 119.99) throw new Error("parse mode string")
+if (m.parseModeString("preferred") !== null) throw new Error("unparseable mode is null")
+
+const lapLive = { name: "eDP-1", description: "LG Display 0x07C6", serial: "", scale: 1.25, width: 2880, height: 1800, refreshRate: 120, x: 0, y: 0 }
+const rowsCfg = m.sanitizeConfig({
+  version: 2, settings: {},
+  monitors: [{ id: "lg-display-0x07c6", label: "LG Display 0x07C6", description: "LG Display 0x07C6", serial: "" }],
+  profiles: [
+    { id: "desk", name: "Desk", monitors: ["lg-display-0x07c6"] },
+    { id: "solo", name: "Solo", monitors: [] }
+  ]
+})
+const deskRows = m.profileDisplayRows(rowsCfg, rowsCfg.profiles[0], [lapLive])
+if (deskRows.length !== 1 || deskRows[0].pending !== false || deskRows[0].id !== "lg-display-0x07c6") throw new Error("saved display row")
+if (!deskRows[0].live || deskRows[0].live.name !== "eDP-1") throw new Error("saved row attaches live hit")
+const soloRows = m.profileDisplayRows(rowsCfg, rowsCfg.profiles[1], [lapLive])
+if (soloRows.length !== 1 || soloRows[0].pending !== true) throw new Error("empty profile shows pending live row")
+if (soloRows[0].id !== "lg-display-0x07c6") throw new Error("pending row uses the monitor slug id")
+if (m.profileDisplayRows(rowsCfg, rowsCfg.profiles[1], []).length !== 0) throw new Error("no live, no pending rows")
+const adopted = m.captureLiveMonitorIntoProfile(rowsCfg, "solo", lapLive)
+if (adopted.id !== "lg-display-0x07c6") throw new Error("adopt returns existing monitor id")
+const soloAfter = adopted.config.profiles.filter(function(p) { return p.id === "solo" })[0]
+if (!soloAfter.monitors.length || soloAfter.monitors[0] !== "lg-display-0x07c6") throw new Error("adopt adds display to profile")
+const again = m.captureLiveMonitorIntoProfile(adopted.config, "solo", lapLive)
+const soloTwice = again.config.profiles.filter(function(p) { return p.id === "solo" })[0]
+if (soloTwice.monitors.length !== 1) throw new Error("adopt is idempotent")
+
+// Connected displays the profile does not know always get a pending row —
+// the laptop panel under a desk profile, a hotel HDMI, anything.
+const hdmiLive = { name: "DP-1", description: "Generic HDMI FHD", serial: "", scale: 1, width: 1920, height: 1080, refreshRate: 60, x: 1440, y: 0 }
+const mixedRows = m.profileDisplayRows(rowsCfg, rowsCfg.profiles[0], [hdmiLive])
+if (mixedRows.length !== 2) throw new Error("unclaimed live display appends a row")
+if (mixedRows[0].pending !== false || mixedRows[0].live !== null) throw new Error("saved display with no live hit stays first")
+if (mixedRows[1].pending !== true || mixedRows[1].live.name !== "DP-1") throw new Error("unclaimed display is pending with live hit")
+const bothRows = m.profileDisplayRows(rowsCfg, rowsCfg.profiles[0], [lapLive, hdmiLive])
+if (bothRows.length !== 2) throw new Error("claimed display is not duplicated")
+if (bothRows[0].live.name !== "eDP-1" || bothRows[1].live.name !== "DP-1") throw new Error("claimed + unclaimed rows attach the right live hits")

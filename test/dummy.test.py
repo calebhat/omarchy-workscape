@@ -220,6 +220,27 @@ def test_live_offset_does_not_collide_with_desk_dock():
     assert 1 not in live and 2 not in live and 5 not in live
 
 
+def test_schema_keeps_monitor_scales_and_modes():
+    schema = SourceFileLoader("dummy_schema", str(ROOT / "scripts/schema")).load_module()
+    cfg = schema.sanitize_config({
+        "version": 2,
+        "settings": {},
+        "monitors": [{"id": "laptop", "label": "Laptop", "description": "BOE NE135A1M-NY1", "name": "eDP-1"}],
+        "profiles": [{
+            "id": "p", "name": "P", "monitors": ["laptop"],
+            "monitorScales": {"laptop": 1.5, "ghost": 2, "bad": "junk"},
+            "monitorModes": {
+                "laptop": {"width": 2880, "height": 1800, "refreshRate": 120},
+                "ghost": {"width": 1920, "height": 1080, "refreshRate": 60},
+                "bad": {"width": "x", "height": 2, "refreshRate": 5},
+            },
+        }],
+    })
+    prof = cfg["profiles"][0]
+    assert prof["monitorScales"] == {"laptop": 1.5}, prof["monitorScales"]
+    assert prof["monitorModes"] == {"laptop": {"width": 2880, "height": 1800, "refreshRate": 120}}, prof["monitorModes"]
+
+
 if __name__ == "__main__":
     test_fixture_is_not_user_config()
     test_config_path_honors_env()
@@ -230,4 +251,5 @@ if __name__ == "__main__":
     test_dummy_exec_silent_and_launch_script()
     test_dummy_append_extra_does_not_min_size()
     test_live_offset_does_not_collide_with_desk_dock()
+    test_schema_keeps_monitor_scales_and_modes()
     print("dummy.test.py ok")
