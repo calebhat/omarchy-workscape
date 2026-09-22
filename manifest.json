@@ -2,12 +2,15 @@
   "schemaVersion": 1,
   "id": "io.github.calebhat.workscape",
   "name": "WorkScape",
-  "version": "1.13.0",
+  "version": "1.14.0",
   "author": "calebhat",
   "license": "MIT",
-  "description": "Monitor and workspace management suite: display profiles with per-display scale and resolution, workspace-to-monitor pins, window presets, overflow automation, and optional login apply.",
+  "description": "Monitor and workspace management suite: display profiles with per-display scale and resolution, dock and network bindings, workspace-to-monitor pins, window presets, overflow automation, login and display-change auto-apply.",
   "homepage": "https://github.com/calebhat/omarchy-workscape",
-  "kinds": ["service", "bar-widget"],
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
   "entryPoints": {
     "service": "Service.qml",
     "barWidget": "BarWidget.qml"

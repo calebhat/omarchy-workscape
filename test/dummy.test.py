@@ -241,6 +241,25 @@ def test_schema_keeps_monitor_scales_and_modes():
     assert prof["monitorModes"] == {"laptop": {"width": 2880, "height": 1800, "refreshRate": 120}}, prof["monitorModes"]
 
 
+def test_schema_settings_and_docks():
+    schema = SourceFileLoader("dummy_schema2", str(ROOT / "scripts/schema")).load_module()
+    cfg = schema.sanitize_config({
+        "version": 2,
+        "settings": {"applyOnMonitorChange": True},
+        "profiles": [{
+            "id": "p", "name": "P",
+            "docks": ["usb:413c:b06f:DG7X753", "usb:413c:b06f:DG7X753", "  "],
+            "dockLabels": {"usb:413c:b06f:DG7X753": "Dell Dock", "usb:nope:0:0": "Unbound"},
+        }],
+    })
+    assert cfg["settings"]["applyOnMonitorChange"] is True
+    default = schema.sanitize_config({"version": 2, "settings": {}, "profiles": [{"id": "q", "name": "Q"}]})
+    assert default["settings"]["applyOnMonitorChange"] is False
+    prof = cfg["profiles"][0]
+    assert prof["docks"] == ["usb:413c:b06f:DG7X753"], prof["docks"]
+    assert prof["dockLabels"] == {"usb:413c:b06f:DG7X753": "Dell Dock"}, prof["dockLabels"]
+
+
 if __name__ == "__main__":
     test_fixture_is_not_user_config()
     test_config_path_honors_env()
@@ -252,4 +271,5 @@ if __name__ == "__main__":
     test_dummy_append_extra_does_not_min_size()
     test_live_offset_does_not_collide_with_desk_dock()
     test_schema_keeps_monitor_scales_and_modes()
+    test_schema_settings_and_docks()
     print("dummy.test.py ok")

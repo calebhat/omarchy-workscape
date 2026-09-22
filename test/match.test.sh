@@ -516,4 +516,36 @@ os.environ.pop("WORKSCAPE_OCCUPIED_WS", None)
 print("occupied prefs still restamp layout ok")
 PY
 
+python3 - "$MATCH" <<'PY'
+from importlib.machinery import SourceFileLoader
+import sys
+m = SourceFileLoader("match", sys.argv[1]).load_module()
+cfg = {
+    "monitors": [
+        {"id": "laptop", "label": "Laptop", "description": "BOE NE135A1M-NY1", "name": "eDP-1"},
+    ],
+    "profiles": [
+        {"id": "desk-home", "name": "Desk home", "monitors": ["laptop"], "docks": ["usb:413c:b06f:DG7X753"]},
+        {"id": "desk-roam", "name": "Desk roam", "monitors": ["laptop"]},
+    ],
+}
+live = [{"name": "eDP-1", "description": "BOE NE135A1M-NY1"}]
+m.DOCK.connected_ids = lambda root=None: {"usb:413c:b06f:DG7X753"}
+best = m.best_profile(cfg, live, {})
+assert best["id"] == "desk-home", best
+info = m.profile_match(cfg, cfg["profiles"][0], live, {})
+assert info["matches"] is True and info["dockConstrained"] is True and info["dockMatches"] is True, info
+# Dock unplugged: the bound profile refuses, the fallback takes over.
+m.DOCK.connected_ids = lambda root=None: set()
+info = m.profile_match(cfg, cfg["profiles"][0], live, {})
+assert info["matches"] is False and info["reason"] == "dock", info
+assert "dock that isn't connected" in m.mismatch_detail(cfg, cfg["profiles"][0], info)
+best = m.best_profile(cfg, live, {})
+assert best["id"] == "desk-roam", best
+status = m.live_status(cfg, live, {})
+assert status["docks"] == [], status
+assert status["profiles"][0]["reason"] == "dock", status["profiles"][0]
+print("dock-bound profile matching ok")
+PY
+
 echo "match.test.sh ok"

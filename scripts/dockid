@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Identify docking stations from the USB device tree.
+
+A dock hub is a stable per-device identity (vendor:product plus its serial
+when exposed), independent of monitors and network. Profiles can bind dock
+ids the same way they bind a Wi-Fi SSID / LAN subnet.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+SYS_USB = Path("/sys/bus/usb/devices")
+_DEVICE_RE = re.compile(r"^\d+-[\d.]+$")
+_MAX_DEVICES = 64
+
+
+def _read(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40]
+
+
+def iter_devices(root: Path = SYS_USB) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    try:
+        entries = sorted(p for p in root.iterdir() if p.name and _DEVICE_RE.match(p.name))
+    except OSError:
+        return out
+    for dev in entries:
+        vendor = _read(dev / "idVendor").lower()
+        product_id = _read(dev / "idProduct").lower()
+        if not vendor or not product_id:
+            continue
+        label = _read(dev / "product") or _read(dev / "manufacturer") or f"{vendor}:{product_id}"
+        serial = _read(dev / "serial")
+        if serial:
+            uid = f"usb:{vendor}:{product_id}:{serial}"
+        else:
+            uid = f"usb:{vendor}:{product_id}:{_slug(label)}"
+        out.append({"id": uid[:120], "label": label[:64], "serial": serial[:64]})
+        if len(out) >= _MAX_DEVICES:
+            break
+    return out
+
+
+def _dockish(entry: dict[str, str]) -> bool:
+    label = entry["label"].lower()
+    if "host controller" in label or "root hub" in label:
+        return False
+    return "dock" in label or "hub" in label or bool(entry.get("serial"))
+
+
+def list_devices(root: Path = SYS_USB) -> list[dict[str, str]]:
+    """Picker list: docks/hubs and serial-bearing devices first, noise last."""
+    devices = iter_devices(root)
+    picked = [d for d in devices if _dockish(d)]
+    rest = [d for d in devices if not _dockish(d)]
+    picked.sort(key=lambda d: ("dock" not in d["label"].lower(), 0 if d.get("serial") else 1, d["label"]))
+    rest.sort(key=lambda d: d["label"])
+    return (picked + rest)[:24]
+
+
+def connected_ids(root: Path = SYS_USB) -> set[str]:
+    return {d["id"] for d in iter_devices(root)}
+
+
+def best_candidate(root: Path = SYS_USB) -> dict[str, str] | None:
+    """The one device most likely to be the dock the user just plugged in."""
+    devices = iter_devices(root)
+    noise = lambda d: "host controller" in d["label"].lower() or "root hub" in d["label"].lower()
+    usable = [d for d in devices if not noise(d)]
+    for pattern in (r"\bdock\b", r"dock", r"\bhub\b"):
+        for d in usable:
+            if re.search(pattern, d["label"], re.IGNORECASE):
+                return d
+    for d in usable:
+        if d.get("serial"):
+            return d
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="USB dock identity for WorkScape")
+    parser.add_argument("--list", action="store_true", help="print picker JSON of USB devices")
+    parser.add_argument("--capture", action="store_true", help="print the best dock candidate as JSON, or null")
+    parser.add_argument("--has", default="", help="exit 0 when this device id is connected")
+    parser.add_argument("--sys-root", default="", help="alternate /sys/bus/usb/devices for tests")
+    args = parser.parse_args()
+    root = Path(args.sys_root) if args.sys_root else SYS_USB
+    if args.list:
+        json.dump(list_devices(root), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    if args.capture:
+        json.dump(best_candidate(root), sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    if args.has:
+        want = args.has.strip()
+        return 0 if want and want in connected_ids(root) else 1
+    json.dump(sorted(connected_ids(root)), sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -91,6 +91,7 @@ Panel {
     property bool newProfileBindNetwork: true
     property bool editNetworkOpen: false
     property string editNetworkProfileId: ""
+    property string dockCaptureProfileId: ""
     property string editNetworkSsids: ""
     property string editNetworkSubnets: ""
     property string editNetworkConnections: ""
@@ -887,6 +888,48 @@ Panel {
         for (var i = 0; i < cfg.profiles.length; i++) if (cfg.profiles[i].id === id) cfg.profiles[i].name = String(name).slice(0, 48)
         config = cfg; saveConfig()
     }
+    function bindProfileDock(id) {
+        dockCaptureProfileId = id
+        dockCaptureProc.running = true
+    }
+    function finishBindProfileDock(id, hit) {
+        var cfg = root.currentConfig()
+        var prof = Model.profileById(cfg, id)
+        if (!prof || !hit || !hit.id) {
+            errorText = "No dock-like USB device found — plug the dock in first"
+            return
+        }
+        var docks = Model.dockBound(prof)
+        if (docks.indexOf(hit.id) < 0) docks.push(hit.id)
+        if (docks.length > 4) docks = docks.slice(docks.length - 4)
+        var labels = {}
+        var prev = prof.dockLabels || {}
+        for (var d = 0; d < docks.length; d++) labels[docks[d]] = prev[docks[d]] || ""
+        labels[hit.id] = String(hit.label || hit.id).slice(0, 64)
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== id) continue
+            cfg.profiles[i].docks = docks
+            cfg.profiles[i].dockLabels = Model.normalizeDockLabels(labels, docks)
+        }
+        config = cfg
+        saveConfig()
+        statusText = "Bound dock " + labels[hit.id] + " to this profile"
+        clearStatusTimer.restart()
+        liveProc.running = true
+    }
+    function clearProfileDock(id) {
+        var cfg = root.currentConfig()
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== id) continue
+            cfg.profiles[i].docks = []
+            cfg.profiles[i].dockLabels = {}
+        }
+        config = cfg
+        saveConfig()
+        statusText = "Dock binding cleared"
+        clearStatusTimer.restart()
+        liveProc.running = true
+    }
     function setMonitorDisabled(profileId, monitorId, off) {
         var cfg = root.currentConfig()
         for (var i = 0; i < cfg.profiles.length; i++) {
@@ -1032,6 +1075,14 @@ Panel {
         cfg.settings.applyOnBoot = !!on
         config = cfg
         saveConfig()
+    }
+    function setApplyOnMonitorChange(on) {
+        var cfg = root.currentConfig()
+        cfg.settings.applyOnMonitorChange = !!on
+        config = cfg
+        saveConfig()
+        statusText = on ? "Displays change will auto-apply (with settle)" : "Display auto-apply off"
+        clearStatusTimer.restart()
     }
     function overflowEnabled() {
         var ov = Model.normalizeOverflow(root.activeProfile.overflow)
@@ -1435,6 +1486,18 @@ Panel {
         id: setOutputProc
         stdout: SplitParser { onRead: function(d) { if (d.length > 1024) return; root.statusText = d; clearStatusTimer.restart() } }
         stderr: SplitParser { onRead: function(d){ if (d.length > 1024) return; console.warn("[workscape] set-output] " + d) } }
+    }
+    Process {
+        id: dockCaptureProc
+        command: root.helperRun(["bash", root.script, "--capture-dock"], 8, 4096)
+        stdout: StdioCollector { id: dockCaptureOut; waitForEnd: true }
+        onExited: function(code) {
+            var hit = null
+            if (code === 0) {
+                try { hit = JSON.parse(dockCaptureOut.text || "null") } catch (e) { hit = null }
+            }
+            root.finishBindProfileDock(root.dockCaptureProfileId, hit)
+        }
     }
     Process {
         id: applyProc
@@ -2743,6 +2806,20 @@ Panel {
                     }
 
                     SectionCard {
+                        title: "DISPLAY CHANGES"
+                        hint: "On: docking or undocking waits for the displays to settle (a dock brings them up over a few seconds), then applies the matching profile on its own. A 30s scan catches late arrivals like a dock whose USB side enumerates after its monitors. Occupied workspaces are still left alone."
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        WrapToggle {
+                            Layout.fillWidth: true
+                            label: "Apply matching profile when displays change"
+                            checked: root.config.settings && root.config.settings.applyOnMonitorChange === true
+                            foreground: root.foreground
+                            onClicked: root.setApplyOnMonitorChange(!(root.config.settings && root.config.settings.applyOnMonitorChange === true))
+                        }
+                    }
+
+                    SectionCard {
                         visible: Model.profileControlFlags(root.activeProfile).showOverflowCard
                         title: "STAGE OVERFLOW · " + (root.activeProfile.name || "Profile")
                         hint: "Profile-wide chain of unused workspaces. When this is on, extras bounced from a block workspace fill the chosen workspaces in order, up to a max per workspace."
@@ -2946,6 +3023,16 @@ Panel {
                                             font.family: root.fontFamily
                                             font.pixelSize: Style.font.caption
                                         }
+                                        Text {
+                                            visible: Model.dockBound(root.profileRecord(modelData.id)).length > 0
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            textFormat: Text.PlainText
+                                            text: Model.boundDockLine(root.profileRecord(modelData.id), root.liveStatus)
+                                            color: Model.dockConnected(root.profileRecord(modelData.id), root.liveStatus) ? Color.accent : root.dim
+                                            font.family: root.fontFamily
+                                            font.pixelSize: Style.font.caption
+                                        }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             spacing: Style.space(6)
@@ -2990,6 +3077,16 @@ Panel {
                                                 visible: Model.networkConfigured(root.profileRecord(modelData.id).network)
                                                 text: "Clear network"
                                                 onClicked: root.clearProfileNetwork(modelData.id)
+                                            }
+                                            Button {
+                                                text: Model.dockBound(root.profileRecord(modelData.id)).length ? "Rebind dock" : "Bind dock"
+                                                tooltipText: "Snapshots the dock-like USB device that is connected now. The profile then also requires that dock (any network)."
+                                                onClicked: root.bindProfileDock(modelData.id)
+                                            }
+                                            Button {
+                                                visible: Model.dockBound(root.profileRecord(modelData.id)).length > 0
+                                                text: "Clear dock"
+                                                onClicked: root.clearProfileDock(modelData.id)
                                             }
                                             Button { text: "Delete"; onClicked: root.deleteProfile(modelData.id) }
                                         }

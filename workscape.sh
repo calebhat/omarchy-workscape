@@ -185,6 +185,56 @@ cmd_set_output() {
   echo "set $conn ${w}x${h}@${hz} scale=${sc} pos=${x}x${y}"
 }
 
+cmd_apply_on_monitor_change() {
+  # Event + periodic scan body: settle, match, and apply at most what changed.
+  ensure_config || exit 1
+  wait_for_hyprland || exit 1
+  local settle fp matched new_matched rounds=0
+  settle=$(python3 "$PLUGIN_DIR/scripts/monitorsettle" --wait --timeout 12 2>/dev/null || true)
+  fp=$(printf '%s' "$settle" | jq -r '.fingerprint // empty' 2>/dev/null || true)
+  if [[ -z $fp ]]; then
+    echo "no monitor fingerprint — skipping"
+    exit 0
+  fi
+  matched=$(cmd_match_id 2>/dev/null | tr -d '\n')
+  if [[ -z $matched ]]; then
+    echo "no profile matches the current displays — nothing to do"
+    exit 0
+  fi
+  local last_fp last_profile
+  last_fp=$(state_get last_auto_fp | tr -d '\n')
+  last_profile=$(state_get last_auto_profile | tr -d '\n')
+  if [[ $fp == "$last_fp" && $matched == "$last_profile" ]]; then
+    echo "display set unchanged (profile $matched) — skipping"
+    exit 0
+  fi
+  while :; do
+    rounds=$((rounds + 1))
+    echo "auto-apply: displays settled → profile $matched (round $rounds)"
+    cmd_sync_active_profile >/dev/null || true
+    # Subshell: cmd_apply execs into the isolated apply; the scan must survive
+    # to re-check the display set and record the guard state afterwards.
+    ( WORKSCAPE_APPLY_ARGV=(--apply-profile "$matched")
+      cmd_apply hotkey "$matched" true ) || true
+    # Another display can land mid-apply; re-settle briefly and re-check.
+    settle=$(python3 "$PLUGIN_DIR/scripts/monitorsettle" --wait --timeout 4 2>/dev/null || true)
+    fp=$(printf '%s' "$settle" | jq -r '.fingerprint // empty' 2>/dev/null || true)
+    [[ -n $fp ]] || break
+    new_matched=$(cmd_match_id 2>/dev/null | tr -d '\n')
+    if [[ -z $new_matched || $new_matched == "$matched" ]]; then
+      matched=${new_matched:-$matched}
+      break
+    fi
+    matched=$new_matched
+    if (( rounds >= 3 )); then
+      echo "auto-apply: match still moving ($matched) — stopping after $rounds rounds"
+      break
+    fi
+  done
+  state_put last_auto_fp "$fp"
+  state_put last_auto_profile "$matched"
+}
+
 notify() {
   local title=$1 body=$2
   if command -v notify-send >/dev/null 2>&1; then
@@ -1309,6 +1359,9 @@ case "${1:-}" in
   --live-status) cmd_live_status ;;
   --sync-active-profile) cmd_sync_active_profile ;;
   --set-output) shift; cmd_set_output "$@" ;;
+  --apply-on-monitor-change) cmd_apply_on_monitor_change ;;
+  --list-docks) python3 "$PLUGIN_DIR/scripts/dockid" --list ;;
+  --capture-dock) python3 "$PLUGIN_DIR/scripts/dockid" --capture ;;
   --match-id) cmd_match_id ;;
   --launch) shift; cmd_launch "$@" ;;
   --launch-all) shift; cmd_launch_all "${1:-false}" ;;
@@ -1336,6 +1389,9 @@ workscape.sh — helper for io.github.calebhat.workscape
   --sync-active-profile        set settings.activeProfileId to the matching layout
   --match-id                   print matching profile id
   --set-output <conn> [scale] [WxH@Hz]  set one live output now (empty args keep current)
+  --apply-on-monitor-change    wait for displays to settle, then apply the matching profile (scan body)
+  --list-docks                 JSON of USB devices usable as dock bindings
+  --capture-dock               JSON of the best connected dock candidate (or null)
   --launch <ws> <exec> [silent]  launch single app on workspace
   --launch-all                 boot path (no-op unless applyOnBoot)
   --force-launch-all           launch matching profile regardless of boot flag

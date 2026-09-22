@@ -9,6 +9,7 @@ function defaultConfig() {
         settings: {
             enabled: true,
             applyOnBoot: false,
+            applyOnMonitorChange: false,
             launchDelayMs: 800,
             staggerMs: 80,
             silent: true,
@@ -45,6 +46,8 @@ function defaultProfile() {
         defaultWorkspace: 0,
         persistentWorkspaces: false,
         network: emptyNetwork(),
+        docks: [],
+        dockLabels: {},
         overflow: emptyOverflow(),
         claimedAt: 0
     }
@@ -380,6 +383,8 @@ function applyHint(cfg, profile, liveList, liveNet, liveStatus) {
                 match.detail = liveStatus.profiles[i].detail || match.detail
                 match.networkConstrained = liveStatus.profiles[i].networkConstrained
                 match.networkMatches = liveStatus.profiles[i].networkMatches
+                match.dockConstrained = liveStatus.profiles[i].dockConstrained
+                match.dockMatches = liveStatus.profiles[i].dockMatches
                 break
             }
         }
@@ -867,6 +872,52 @@ function parseModeString(s) {
     if (!hit) return null
     var r = Number(hit[3])
     return { width: parseInt(hit[1], 10), height: parseInt(hit[2], 10), refreshRate: r > 0 ? r : 60 }
+}
+
+function normalizeDocks(raw) {
+    var out = []
+    if (!Array.isArray(raw)) return out
+    for (var i = 0; i < raw.length && out.length < 4; i++) {
+        var d = String(raw[i] || "").trim().slice(0, 120)
+        if (d && out.indexOf(d) < 0) out.push(d)
+    }
+    return out
+}
+
+function normalizeDockLabels(raw, docks) {
+    var out = {}
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out
+    var keys = Object.keys(raw).slice(0, 8)
+    for (var i = 0; i < keys.length; i++) {
+        var id = String(keys[i] || "").slice(0, 120)
+        if (!id || (docks && docks.indexOf(id) < 0)) continue
+        out[id] = String(raw[keys[i]] || "").slice(0, 64)
+    }
+    return out
+}
+
+function dockBound(profile) {
+    return normalizeDocks(profile && profile.docks)
+}
+
+function dockConnected(profile, liveStatus) {
+    var docks = dockBound(profile)
+    var connected = (liveStatus && liveStatus.docks) || []
+    for (var i = 0; i < docks.length; i++) {
+        if (connected.indexOf(docks[i]) >= 0) return true
+    }
+    return false
+}
+
+function boundDockLine(profile, liveStatus) {
+    var docks = dockBound(profile)
+    if (!docks.length) return ""
+    var labels = (profile && profile.dockLabels) || {}
+    var parts = []
+    for (var i = 0; i < docks.length; i++) {
+        parts.push(String(labels[docks[i]] || docks[i]).slice(0, 48))
+    }
+    return "Dock: " + parts.join(", ") + (dockConnected(profile, liveStatus) ? " · connected" : " · not connected")
 }
 
 function rectsOverlap(a, b) {
@@ -2342,6 +2393,11 @@ function normalizeProfile(p, monitorIds) {
         persistentWorkspaces: p.persistentWorkspaces === true,
         overflow: normalizeOverflow(p.overflow),
         network: normalizeNetwork(p.network),
+        docks: normalizeDocks(p.docks),
+        dockLabels: (function() {
+            var docks = normalizeDocks(p.docks)
+            return normalizeDockLabels(p.dockLabels, docks)
+        })(),
         claimedAt: (function() {
             var n = parseInt(p.claimedAt, 10)
             return n > 0 ? n : 0
@@ -2354,6 +2410,7 @@ function migrateV1(cfg) {
     if (cfg.settings && typeof cfg.settings === "object") {
         out.settings.enabled = cfg.settings.enabled !== false
         out.settings.applyOnBoot = cfg.settings.applyOnBoot === true
+        out.settings.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
         out.settings.launchDelayMs = Math.max(0, Math.min(10000, parseInt(cfg.settings.launchDelayMs) || 800))
         out.settings.staggerMs = Math.max(0, Math.min(2000, parseInt(cfg.settings.staggerMs) || 80))
         out.settings.silent = cfg.settings.silent !== false
@@ -2379,6 +2436,7 @@ function sanitizeConfig(cfg) {
     if (cfg.settings && typeof cfg.settings === "object") {
         out.settings.enabled = cfg.settings.enabled !== false
         out.settings.applyOnBoot = cfg.settings.applyOnBoot === true
+        out.settings.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
         out.settings.launchDelayMs = Math.max(0, Math.min(10000, parseInt(cfg.settings.launchDelayMs) || 800))
         out.settings.staggerMs = Math.max(0, Math.min(2000, parseInt(cfg.settings.staggerMs) || 80))
         out.settings.silent = cfg.settings.silent !== false
@@ -2543,7 +2601,7 @@ function bestProfile(cfg, liveList, liveNet) {
         scored.push({
             profile: list[i],
             info: info,
-            netBoost: info.networkConstrained && info.networkMatches ? 2 : 1,
+            netBoost: (info.networkConstrained && info.networkMatches) || (info.dockConstrained && info.dockMatches) ? 2 : 1,
             exactBoost: info.exact ? 2 : 1,
             claimed: Number(list[i].claimedAt) || 0
         })

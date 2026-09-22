@@ -19,6 +19,7 @@ from typing import Any
 
 NET = SourceFileLoader("workscape_network", str(Path(__file__).resolve().parent / "network")).load_module()
 SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
+DOCK = SourceFileLoader("workscape_dockid", str(Path(__file__).resolve().parent / "dockid")).load_module()
 
 _CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
@@ -91,6 +92,10 @@ def find_live(saved: dict[str, Any], live_list: list[dict[str, Any]], enabled_on
     return None
 
 
+def profile_docks(profile: dict[str, Any]) -> list[str]:
+    return [str(x).strip() for x in (profile.get("docks") or []) if str(x).strip()][:4]
+
+
 def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[dict[str, Any]], live_net: dict[str, Any] | None = None) -> dict[str, Any]:
     live = [m for m in live_list if live_is_connected(m)]
     required = list(profile.get("monitors") or [])
@@ -122,6 +127,12 @@ def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
     if matches and net["constrained"] and not net["matches"]:
         matches = False
         reason = "network"
+    docks = profile_docks(profile)
+    dock_constrained = bool(docks)
+    dock_matches = not dock_constrained or bool(set(docks) & DOCK.connected_ids())
+    if matches and dock_constrained and not dock_matches:
+        matches = False
+        reason = "dock"
     return {
         "matches": matches,
         "exact": exact,
@@ -133,6 +144,8 @@ def profile_match(cfg: dict[str, Any], profile: dict[str, Any], live_list: list[
         "reason": reason,
         "networkConstrained": net["constrained"],
         "networkMatches": net["matches"],
+        "dockConstrained": dock_constrained,
+        "dockMatches": dock_matches,
     }
 
 
@@ -156,14 +169,19 @@ def mismatch_detail(cfg: dict[str, Any], profile: dict[str, Any], info: dict[str
         return f"{name} is an exact layout and extra displays are connected"
     if reason == "network":
         return f"{name} is bound to a different network than this machine"
+    if reason == "dock":
+        return f"{name} is bound to a dock that isn't connected"
     return f"{name} does not match the current displays"
 
 
 def _match_rank(profile: dict[str, Any], info: dict[str, Any]) -> tuple:
-    net_boost = 2 if info.get("networkConstrained") and info.get("networkMatches") else 1
+    identity_boost = 2 if (
+        (info.get("networkConstrained") and info.get("networkMatches"))
+        or (info.get("dockConstrained") and info.get("dockMatches"))
+    ) else 1
     exact_boost = 2 if info.get("exact") else 1
     claimed = int(profile.get("claimedAt") or 0)
-    return (net_boost, exact_boost, int(info.get("requiredCount") or 0), claimed)
+    return (identity_boost, exact_boost, int(info.get("requiredCount") or 0), claimed)
 
 
 def best_profile(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -572,6 +590,8 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: 
             "detail": mismatch_detail(cfg, profile, info),
             "networkConstrained": info.get("networkConstrained"),
             "networkMatches": info.get("networkMatches"),
+            "dockConstrained": info.get("dockConstrained"),
+            "dockMatches": info.get("dockMatches"),
         })
     bindings = workspace_bindings(cfg, matched, live) if matched else {}
     conflicts = [p.get("id") for p in hits if matched and p.get("id") != matched.get("id")]
@@ -600,6 +620,7 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: 
         "bindings": bindings,
         "profiles": profiles,
         "network": net,
+        "docks": sorted(DOCK.connected_ids()),
         "conflictProfileIds": conflicts,
         "conflict": bool(conflicts),
         "needsNetworkWait": not has_unconstrained_match(cfg, live),

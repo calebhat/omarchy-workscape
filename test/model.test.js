@@ -3,7 +3,7 @@ const fs = require("fs")
 const path = require("path")
 const src = fs.readFileSync(path.join(__dirname, "..", "Model.js"), "utf8")
   .replace(/^\.pragma library\s*/, "")
-eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, normalizeMonitorScales, normalizeMonitorModes, parseModeString, profileDisplayRows, captureLiveMonitorIntoProfile, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr, collapseGroupTiles, groupPreviewTiles }")
+eval(src + "\nmodule.exports = { defaultConfig, sanitizeConfig, migrateV1, profileMatch, bestProfile, nextFollowedMatch, sameMonitor, normalizeMonitor, displayNameForExec, upsertLiveMonitor, normalizeGeom, autoLayoutRects, workspaceUsesCustomLayout, layoutHasOverlap, packedGeomsForApps, listSplits, nudgeSplit, evenSplit, snapPosition, splitDrop, swapGeoms, dropZone, splitRect, fillHole, removeAppAndFill, setAppsPlace, monitorOptions, copyWorkspace, moveWorkspace, snapLayoutRect, normalizeMonitorLayout, normalizeMonitorScales, normalizeMonitorModes, parseModeString, profileDisplayRows, captureLiveMonitorIntoProfile, normalizeDocks, normalizeDockLabels, dockBound, dockConnected, boundDockLine, placeMonitorNoOverlap, rectsOverlap, arrangeMonitorsAfterDrop, workspacePref, normalizeWorkspacePref, normalizeWorkspacePrefs, assignmentIsLocked, workspaceHasLockedApp, ensureAssignmentGeoms, normalizeAssignment, sameAppExec, canonicalExec, extractChromiumAppKey, layoutDescription, visibleCountHelp, clampVisibleCount, emptyNetwork, captureNetwork, networkConfigured, networkMatches, networksOverlap, environmentOwner, claimEnvironment, monitorKey, suggestedProfileName, parseNetworkText, boundNetworkLine, matchReasonLabel, applyRefuseText, applyHint, allowedMainView, normalizeOverflow, unsetWorkspaces, overflowSummary, maxWorkspace, maxOrganizerPanes, normalizeChrome, clampOpacity, assignmentPlace, safeCwd, safeUrl, chromeIsDefault, lockPlaceCount, assignedAppCount, workspaceForcesBlock, effectiveWorkspacePref, workspaceControlFlags, canEditWorkspacePref, profileUsesBounce, profileControlFlags, parseCappedJson, maxConfigBytes, evalPayload, shapePresets, findShape, describeShape, shapeRects, applyShapeToApps, chipGeomsForWorkspace, defaultHotkeys, normalizeChord, normalizeHotkeys, assignHotkey, qtKeyToHypr, collapseGroupTiles, groupPreviewTiles }")
 const m = module.exports
 
 const v1 = m.sanitizeConfig({
@@ -859,3 +859,24 @@ if (mixedRows[1].pending !== true || mixedRows[1].live.name !== "DP-1") throw ne
 const bothRows = m.profileDisplayRows(rowsCfg, rowsCfg.profiles[0], [lapLive, hdmiLive])
 if (bothRows.length !== 2) throw new Error("claimed display is not duplicated")
 if (bothRows[0].live.name !== "eDP-1" || bothRows[1].live.name !== "DP-1") throw new Error("claimed + unclaimed rows attach the right live hits")
+
+if (m.defaultConfig().settings.applyOnMonitorChange !== false) throw new Error("monitor-change default off")
+const aomc = m.sanitizeConfig({ version: 2, settings: { applyOnMonitorChange: true }, profiles: [{ id: "p", name: "P" }] })
+if (aomc.settings.applyOnMonitorChange !== true) throw new Error("keep monitor-change on")
+if (m.defaultConfig().profiles[0].docks === undefined) throw new Error("default profile has docks")
+const docked = m.sanitizeConfig({
+  version: 2, settings: {},
+  profiles: [{
+    id: "p", name: "P",
+    docks: ["usb:413c:b06f:DG7X753", "usb:413c:b06f:DG7X753", "", "x".repeat(200), "usb:extra"],
+    dockLabels: { "usb:413c:b06f:DG7X753": "Dell Dock WD19DC", "usb:gone:0:0": "Gone" }
+  }]
+})
+if (m.dockBound(docked.profiles[0]).length !== 3) throw new Error("dedupe + cap 4 keeps 3")
+if (docked.profiles[0].dockLabels["usb:gone:0:0"] !== undefined) throw new Error("drop labels for unbound docks")
+if (docked.profiles[0].dockLabels["usb:413c:b06f:DG7X753"] !== "Dell Dock WD19DC") throw new Error("keep dock label")
+var liveDock = { docks: ["usb:413c:b06f:DG7X753"] }
+if (!m.dockConnected(docked.profiles[0], liveDock)) throw new Error("dock connected")
+if (m.dockConnected({ docks: [] }, liveDock)) throw new Error("unbound never connected")
+if (m.boundDockLine(docked.profiles[0], liveDock).indexOf("Dell Dock WD19DC") < 0) throw new Error("dock line uses label")
+if (m.boundDockLine({ docks: [] }, liveDock) !== "") throw new Error("no dock line when unbound")

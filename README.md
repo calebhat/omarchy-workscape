@@ -29,7 +29,7 @@ Use this on [omarchyplugins.com](https://omarchyplugins.com) / the marketplace i
 
 **Longer (about / README excerpt)**
 
-> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses native tiling (dwindle, scrolling, master) and whether extras stay or move to the next workspace. Per-display **scale and resolution** ride along with the profile. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Assign a hotkey to a workspace to open that saved layout on whatever workspace is focused, plus global chords for **Apply matching** and **Fresh Workscape**. Apply from the bar, a middle-click, a hotkey, or optionally at login. Occupied workspaces are left alone unless you **Fresh Workscape**. A profile that does not match the connected displays cannot be applied.
+> WorkScape is an Omarchy + Hyprland suite for people who live on more than one monitor layout. Save a **laptop** profile and a **desk** profile: connected displays (EDID, not `DP-1`) pick the match, optional Wi‑Fi SSID / LAN subnet or a bound **dock** (USB identity) splits two identical laptop-only setups. Each profile presets apps onto workspaces, pins those workspaces to named monitors, and chooses native tiling (dwindle, scrolling, master) and whether extras stay or move to the next workspace. Per-display **scale and resolution** ride along with the profile. The **organizer** edits up to 20 panes with horizontal and vertical splits, drag-to-swap, tile vs float, and per-window opacity/borders. **Fill next open workspace** chains unused workspaces with a global max windows per workspace. Trackpad workspace swipes can follow the profile or stay global. Assign a hotkey to a workspace to open that saved layout on whatever workspace is focused, plus global chords for **Apply matching** and **Fresh Workscape**. Apply from the bar, a middle-click, a hotkey, optionally at login, or automatically when the displays change. Occupied workspaces are left alone unless you **Fresh Workscape**. A profile that does not match the connected displays cannot be applied.
 
 **Suggested listing metadata**
 
@@ -104,19 +104,23 @@ A profile is a named snapshot: monitors, workspace pins, app presets, layout pre
 **How a profile is chosen**
 
 1. Connected displays, matched by EDID serial then description — **not** `DP-1` / `DVI-I-1` (those names swap on a dock).
-2. If the profile has a bound network, Wi‑Fi SSID or the default-route IPv4 subnet must match (never Tailscale or public IP).
-3. If two still match, the network-bound profile wins. Only one layout applies.
+2. If the profile has a bound dock, that USB device must be connected (dock hubs have stable vendor:product + serial ids).
+3. If the profile has a bound network, Wi‑Fi SSID or the default-route IPv4 subnet must match (never Tailscale or public IP).
+4. If two still match, the dock- or network-bound profile wins. Only one layout applies.
 
-**Network**
+**Network and dock**
 
 - **Bind this network / Rebind now** snapshots the live SSID + subnet.
 - **Edit network** types SSID/subnet when you are not on that LAN.
 - **Clear network** makes that profile the any-network fallback for its display set (only one fallback per display set).
 - A display set + network can belong to one profile; binding a network already used on the same displays takes those tokens off the other profile.
+- **Bind dock** snapshots the dock-like USB device that is connected right now (a dock hub, or any serial-bearing USB device) and requires it for this profile — the office dock and the hotel's identical monitors stop fighting. **Clear dock** unbinds.
 
-SSID names can be spoofed. Treat network matching as home vs office convenience, not a security boundary.
+SSID names can be spoofed and USB ids can be cloned. Treat network and dock matching as home vs office convenience, not a security boundary.
 
 **Apply matching profile at login** is **off** by default. When on, login waits for Hyprland; if this layout has no any-network fallback it also waits up to 45s for Wi‑Fi/LAN, then applies the unique match.
+
+**Apply matching profile when displays change** is **off** by default. When on, docking or undocking auto-applies: WorkScape waits for the display set to settle (a dock brings monitors up over several seconds and Hyprland re-emits events while modes settle, so matching too early is exactly why a manual Apply sometimes had to run twice), then applies the matching profile. A 30s scan catches late arrivals such as a dock whose USB side enumerates after its monitors, and re-asserts the profile if something drifts. Occupied workspaces are still left alone; nothing reapplies when the settled display set and the applied profile are unchanged.
 
 **Apply matching** (or middle-click the bar chip) does the same match any time. Plugging in a dock (or unplugging) switches the selected profile to the matching layout so **Fresh Workscape** targets that profile. **Apply** on a profile card runs that profile as saved **only if it matches the connected displays** (and bound network). A desk-dock profile will not apply on a laptop-only setup. Empty assigned workspaces still get their apps and layouts. Occupied assigned workspaces are not relaunched. If the matching profile **changed** (undock → laptop, dock → desk), Apply matching still moves those workspaces onto the new pins and restamps their layouts; it does not close windows. Same-profile Apply matching leaves occupied geometry alone. **Fresh Workscape** closes windows on this profile’s preset workspaces, then applies from scratch and closes the panel; workspaces that are not part of the profile (for example a terminal on WS 8) stay put. **Escape** closes the panel (and any open overlay first).
 
@@ -232,12 +236,16 @@ Config: `~/.local/state/omarchy/workscape/config.json` (outside the plugin tree 
 workscape.sh --live-status
 workscape.sh --apply-matching
 workscape.sh --apply-profile desk-dock
+workscape.sh --apply-on-monitor-change       # settle displays, apply the match (scan body)
+workscape.sh --list-docks                    # USB devices usable as dock bindings
+workscape.sh --capture-dock                  # best connected dock candidate as JSON
 workscape.sh --fresh-apply-profile laptop   # close that profile’s preset workspaces, then apply empty
 workscape.sh --apply-workspace-here 2       # launch matching profile WS 2 onto the focused workspace
 workscape.sh --apply-hotkeys                # write user hotkeys and bind them
 workscape.sh --capture-workspace 2          # snapshot live windows on WS 2 as JSON
 omarchy-shell -q io.github.calebhat.workscape applyMatching
 omarchy-shell -q io.github.calebhat.workscape applyProfile laptop
+omarchy-shell -q io.github.calebhat.workscape applyOnDisplayChange
 omarchy-shell -q io.github.calebhat.workscape applyFresh desk-dock
 omarchy-shell -q io.github.calebhat.workscape applyWorkspaceHere 2
 omarchy-shell -q io.github.calebhat.workscape status

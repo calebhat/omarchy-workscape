@@ -36,6 +36,7 @@ Item {
 
     property bool autoEnabled: true
     property bool applyOnBoot: false
+    property bool applyOnMonitorChange: false
     property int launchDelayMs: 1500
     property bool launchedThisSession: false
     property bool launchScheduled: false
@@ -86,6 +87,7 @@ Item {
                 if (cfg.settings) {
                     root.autoEnabled = cfg.settings.enabled !== false
                     root.applyOnBoot = cfg.settings.applyOnBoot === true
+                    root.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
                     root.launchDelayMs = Number(cfg.settings.launchDelayMs || 1500)
                 }
             } catch (e) { root.log("parse ensure-config: " + e) }
@@ -130,11 +132,33 @@ Item {
             onRead: function(d) {
                 if (d.length > 4096) return
                 root.log("extras " + d)
-                if (d.indexOf('"monitorChange"') >= 0 && !syncMatchProc.running)
-                    syncMatchProc.running = true
+                if (d.indexOf('"monitorChange"') >= 0)
+                    monitorDebounce.restart()
             }
         }
         stderr: SplitParser { onRead: function(d){ if (d.length > 4096) return; console.warn("[workscape] extras] " + d) } }
+    }
+
+    // A dock brings displays up over seconds and Hyprland re-emits events
+    // while modes settle. Coalesce every monitorChange line into one deferred
+    // trigger so the match never sees a half-connected dock.
+    Timer {
+        id: monitorDebounce
+        interval: 2500
+        repeat: false
+        onTriggered: {
+            if (!syncMatchProc.running)
+                syncMatchProc.running = true
+            root.applyOnDisplayChange()
+        }
+    }
+
+    Timer {
+        id: scanTimer
+        interval: 30000
+        repeat: true
+        running: root.applyOnMonitorChange && root.autoEnabled
+        onTriggered: root.applyOnDisplayChange()
     }
 
     Process {
@@ -192,6 +216,13 @@ Item {
         launchProc.running = true
     }
 
+    function applyOnDisplayChange() {
+        if (!root.applyOnMonitorChange || !root.autoEnabled) return
+        if (launchProc.running) return
+        launchProc.command = root.helperRun(["bash", root.script, "--apply-on-monitor-change"], 240, 65536)
+        launchProc.running = true
+    }
+
     function applyProfile(profileId) {
         if (launchProc.running) return
         launchProc.command = root.helperRun(["bash", root.script, "--apply-profile", String(profileId || "")], 180, 65536)
@@ -246,6 +277,7 @@ Item {
         function launchAll(): void { root.launchAll(false) }
         function forceLaunchAll(): void { root.launchAll(true) }
         function applyMatching(): void { root.applyMatching() }
+        function applyOnDisplayChange(): void { root.applyOnDisplayChange() }
         function applyProfile(profileId: string): void { root.applyProfile(profileId) }
         function applyFresh(profileId: string): void { root.applyFresh(profileId) }
         function applyWorkspaceHere(ws: string): void { root.applyWorkspaceHere(ws) }
