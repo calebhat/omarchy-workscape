@@ -40,6 +40,7 @@ Panel {
     property var config: Model.defaultConfig()
     property var assignments: []
     property bool loading: true
+    property bool configLoaded: false
     property string errorText: ""
     property string statusText: ""
     property var appList: []
@@ -238,6 +239,12 @@ Panel {
         return cfg
     }
     function saveConfig() {
+        // A failed load leaves `config` as defaultConfig(); saving that over
+        // the real file wipes every profile. Never save what we never loaded.
+        if (!configLoaded) {
+            root.errorText = "Config not loaded — refusing to save over it"
+            return
+        }
         var cfg = root.currentConfig()
         config = cfg
         assignments = (Model.profileById(cfg, cfg.settings.activeProfileId) || { assignments: [] }).assignments.slice()
@@ -1427,6 +1434,7 @@ Panel {
                 var repaired = Model.repairOverlappingLayouts(sane, "dwindle", 0.49)
                 sane = repaired.config
                 root.config = sane
+                root.configLoaded = true
                 var prof = Model.profileById(sane, sane.settings.activeProfileId)
                 root.assignments = (prof && prof.assignments) ? prof.assignments.slice() : []
                 root.formWorkspace = sane.settings.lastFormWorkspace

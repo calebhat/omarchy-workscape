@@ -114,6 +114,14 @@ def write_config_stdin() -> None:
         sys.exit(1)
     dirfd = SAFE.open_state_dir(create=True)
     try:
+        # Keep the previous version one write back — a bad save (or a panel
+        # saving defaults after a failed load) is then always recoverable.
+        try:
+            prev = SAFE.read_at(dirfd, "config.json", SAFE.MAX_CONFIG_BYTES)
+        except Exception:
+            prev = b""
+        if prev and prev != payload:
+            SAFE.write_at(dirfd, "config.json.bak", prev, mode=0o600, max_bytes=SAFE.MAX_CONFIG_BYTES)
         SAFE.write_at(dirfd, "config.json", payload, mode=0o600, max_bytes=SAFE.MAX_CONFIG_BYTES)
     finally:
         os.close(dirfd)

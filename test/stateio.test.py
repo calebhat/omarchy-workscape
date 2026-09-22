@@ -119,6 +119,18 @@ def test_short_write_leaves_dest(tmp: Path):
     assert (tmp / "config.json").read_bytes() == first
 
 
+def test_write_keeps_previous_as_bak(tmp: Path):
+    env = os.environ.copy()
+    env["WORKSCAPE_STATE_DIR"] = str(tmp)
+    first = json.dumps({"version": 2, "profiles": [{"id": "one", "name": "One"}]})
+    second = json.dumps({"version": 2, "profiles": [{"id": "two", "name": "Two"}]})
+    assert run(env, ["write-config"], stdin=first.encode()).returncode == 0
+    first_saved = (tmp / "config.json").read_bytes()
+    assert run(env, ["write-config"], stdin=second.encode()).returncode == 0
+    assert (tmp / "config.json.bak").read_bytes() == first_saved
+    assert b'"Two"' in (tmp / "config.json").read_bytes()
+
+
 def test_atomic_hyprland_backup(tmp: Path):
     hypr = tmp / "hypr"
     hypr.mkdir()
@@ -241,7 +253,7 @@ if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         base = Path(d)
-        for name in list("abcdefghijklmn"):
+        for name in list("abcdefghijklmno"):
             (base / name).mkdir()
         test_helper_env_disables_bytecode()
         test_write_read_roundtrip(base / "a")
@@ -250,6 +262,7 @@ if __name__ == "__main__":
         test_parent_symlink_rejected(base / "d")
         test_oversized_config(base / "e")
         test_short_write_leaves_dest(base / "f")
+        test_write_keeps_previous_as_bak(base / "o")
         test_atomic_hyprland_backup(base / "g")
         test_unlink_does_not_follow(base / "h")
         test_migrate_copies_only_config(base / "i")
