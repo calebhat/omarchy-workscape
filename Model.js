@@ -10,6 +10,7 @@ function defaultConfig() {
             enabled: true,
             applyOnBoot: false,
             applyOnMonitorChange: false,
+            applyOnShellRestart: false,
             launchDelayMs: 800,
             staggerMs: 80,
             silent: true,
@@ -2411,6 +2412,7 @@ function migrateV1(cfg) {
         out.settings.enabled = cfg.settings.enabled !== false
         out.settings.applyOnBoot = cfg.settings.applyOnBoot === true
         out.settings.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
+        out.settings.applyOnShellRestart = cfg.settings.applyOnShellRestart === true
         out.settings.launchDelayMs = Math.max(0, Math.min(10000, parseInt(cfg.settings.launchDelayMs) || 800))
         out.settings.staggerMs = Math.max(0, Math.min(2000, parseInt(cfg.settings.staggerMs) || 80))
         out.settings.silent = cfg.settings.silent !== false
@@ -2437,6 +2439,7 @@ function sanitizeConfig(cfg) {
         out.settings.enabled = cfg.settings.enabled !== false
         out.settings.applyOnBoot = cfg.settings.applyOnBoot === true
         out.settings.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
+        out.settings.applyOnShellRestart = cfg.settings.applyOnShellRestart === true
         out.settings.launchDelayMs = Math.max(0, Math.min(10000, parseInt(cfg.settings.launchDelayMs) || 800))
         out.settings.staggerMs = Math.max(0, Math.min(2000, parseInt(cfg.settings.staggerMs) || 80))
         out.settings.silent = cfg.settings.silent !== false

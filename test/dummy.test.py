@@ -253,8 +253,10 @@ def test_schema_settings_and_docks():
         }],
     })
     assert cfg["settings"]["applyOnMonitorChange"] is True
+    assert cfg["settings"].get("applyOnShellRestart") is False
     default = schema.sanitize_config({"version": 2, "settings": {}, "profiles": [{"id": "q", "name": "Q"}]})
     assert default["settings"]["applyOnMonitorChange"] is False
+    assert default["settings"]["applyOnShellRestart"] is False
     prof = cfg["profiles"][0]
     assert prof["docks"] == ["usb:413c:b06f:DG7X753"], prof["docks"]
     assert prof["dockLabels"] == {"usb:413c:b06f:DG7X753": "Dell Dock"}, prof["dockLabels"]

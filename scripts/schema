@@ -540,6 +540,7 @@ def sanitize_config(cfg: Any) -> dict[str, Any]:
         "enabled": settings_in.get("enabled") is not False,
         "applyOnBoot": settings_in.get("applyOnBoot") is True,
         "applyOnMonitorChange": settings_in.get("applyOnMonitorChange") is True,
+        "applyOnShellRestart": settings_in.get("applyOnShellRestart") is True,
         "launchDelayMs": _i(settings_in.get("launchDelayMs"), 0, 10000, 800),
         "staggerMs": _i(settings_in.get("staggerMs"), 0, 2000, 80),
         "silent": settings_in.get("silent") is not False,

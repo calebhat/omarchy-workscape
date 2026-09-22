@@ -21,6 +21,7 @@ DEFAULT_CONFIG = """{
     "enabled": true,
     "applyOnBoot": false,
     "applyOnMonitorChange": false,
+    "applyOnShellRestart": false,
     "launchDelayMs": 800,
     "staggerMs": 80,
     "silent": true,

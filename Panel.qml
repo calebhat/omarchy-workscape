@@ -1083,6 +1083,14 @@ Panel {
         config = cfg
         saveConfig()
     }
+    function setApplyOnShellRestart(on) {
+        var cfg = root.currentConfig()
+        cfg.settings.applyOnShellRestart = !!on
+        config = cfg
+        saveConfig()
+        statusText = on ? "Will re-apply when the shell restarts" : "Shell-restart re-apply off"
+        clearStatusTimer.restart()
+    }
     function setApplyOnMonitorChange(on) {
         var cfg = root.currentConfig()
         cfg.settings.applyOnMonitorChange = !!on
@@ -2817,6 +2825,14 @@ Panel {
                             checked: root.config.settings && root.config.settings.applyOnMonitorChange === true
                             foreground: root.foreground
                             onClicked: root.setApplyOnMonitorChange(!(root.config.settings && root.config.settings.applyOnMonitorChange === true))
+                        }
+                        WrapToggle {
+                            Layout.fillWidth: true
+                            label: "Re-apply when the shell restarts"
+                            description: "One forced scan a few seconds after the shell (re)starts, so a restart can never leave the layout half-applied. Occupied workspaces are still left alone."
+                            checked: root.config.settings && root.config.settings.applyOnShellRestart === true
+                            foreground: root.foreground
+                            onClicked: root.setApplyOnShellRestart(!(root.config.settings && root.config.settings.applyOnShellRestart === true))
                         }
                     }
 

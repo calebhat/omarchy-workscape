@@ -37,9 +37,11 @@ Item {
     property bool autoEnabled: true
     property bool applyOnBoot: false
     property bool applyOnMonitorChange: false
+    property bool applyOnShellRestart: false
     property int launchDelayMs: 1500
     property bool launchedThisSession: false
     property bool launchScheduled: false
+    property bool shellStartScheduled: false
     property string lastStatus: ""
 
     function log(msg) {
@@ -88,6 +90,7 @@ Item {
                     root.autoEnabled = cfg.settings.enabled !== false
                     root.applyOnBoot = cfg.settings.applyOnBoot === true
                     root.applyOnMonitorChange = cfg.settings.applyOnMonitorChange === true
+                    root.applyOnShellRestart = cfg.settings.applyOnShellRestart === true
                     root.launchDelayMs = Number(cfg.settings.launchDelayMs || 1500)
                 }
             } catch (e) { root.log("parse ensure-config: " + e) }
@@ -101,6 +104,11 @@ Item {
                 } else {
                     root.log("boot apply skipped (applyOnBoot=" + root.applyOnBoot + ")")
                 }
+            }
+            if (!root.shellStartScheduled) {
+                root.shellStartScheduled = true
+                if (root.autoEnabled && root.applyOnShellRestart)
+                    shellStartTimer.restart()
             }
         }
     }
@@ -214,6 +222,21 @@ Item {
         if (launchProc.running) return
         launchProc.command = root.helperRun(["bash", root.script, "--apply-matching"], 180, 65536)
         launchProc.running = true
+    }
+
+    // One forced scan per service start: settles the display set, then
+    // re-applies the matching profile even when the guard would call it
+    // unchanged — a shell restart can disturb state the fingerprint cannot
+    // see (workspace pins, runtime rules). Window-safe by design.
+    Timer {
+        id: shellStartTimer
+        interval: 3000
+        repeat: false
+        onTriggered: {
+            if (!root.autoEnabled || !root.applyOnShellRestart || launchProc.running) return
+            launchProc.command = root.helperRun(["bash", root.script, "--apply-on-monitor-change", "--force"], 240, 65536)
+            launchProc.running = true
+        }
     }
 
     function applyOnDisplayChange() {

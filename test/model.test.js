@@ -880,3 +880,8 @@ if (!m.dockConnected(docked.profiles[0], liveDock)) throw new Error("dock connec
 if (m.dockConnected({ docks: [] }, liveDock)) throw new Error("unbound never connected")
 if (m.boundDockLine(docked.profiles[0], liveDock).indexOf("Dell Dock WD19DC") < 0) throw new Error("dock line uses label")
 if (m.boundDockLine({ docks: [] }, liveDock) !== "") throw new Error("no dock line when unbound")
+
+if (m.defaultConfig().settings.applyOnShellRestart !== false) throw new Error("shell-restart default off")
+const asr = m.sanitizeConfig({ version: 2, settings: { applyOnShellRestart: true }, profiles: [{ id: "p", name: "P" }] })
+if (asr.settings.applyOnShellRestart !== true) throw new Error("keep shell-restart on")
+if (asr.settings.applyOnMonitorChange !== false) throw new Error("neighbors untouched")

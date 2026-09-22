@@ -285,6 +285,9 @@ write_monitors_lua_block() {
 
 cmd_apply_on_monitor_change() {
   # Event + periodic scan body: settle, match, and apply at most what changed.
+  # --force bypasses the unchanged guard (shell-restart re-apply).
+  local force=""
+  [[ ${1:-} == "--force" ]] && force=1
   ensure_config || exit 1
   wait_for_hyprland || exit 1
   local settle fp matched new_matched rounds=0
@@ -302,7 +305,7 @@ cmd_apply_on_monitor_change() {
   local last_fp last_profile
   last_fp=$(state_get last_auto_fp | tr -d '\n')
   last_profile=$(state_get last_auto_profile | tr -d '\n')
-  if [[ $fp == "$last_fp" && $matched == "$last_profile" ]]; then
+  if [[ -z $force && $fp == "$last_fp" && $matched == "$last_profile" ]]; then
     echo "display set unchanged (profile $matched) — skipping"
     exit 0
   fi
@@ -1459,7 +1462,7 @@ case "${1:-}" in
   --sync-active-profile) cmd_sync_active_profile ;;
   --set-output) shift; cmd_set_output "$@" ;;
   --set-profile-output) shift; cmd_set_profile_output "$@" ;;
-  --apply-on-monitor-change) cmd_apply_on_monitor_change ;;
+  --apply-on-monitor-change) shift; cmd_apply_on_monitor_change "$@" ;;
   --list-docks) python3 "$PLUGIN_DIR/scripts/dockid" --list ;;
   --capture-dock) python3 "$PLUGIN_DIR/scripts/dockid" --capture ;;
   --match-id) cmd_match_id ;;
