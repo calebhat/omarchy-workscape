@@ -2692,21 +2692,26 @@ function profileDisplayRows(cfg, profile, liveList) {
     var rows = []
     var live = liveList || []
     var ids = (profile && profile.monitors) || []
+    var claimed = {}
     for (var i = 0; i < ids.length; i++) {
         var saved = monitorById(cfg, ids[i])
+        var hit = findLive(saved, live)
+        if (hit) claimed[String(hit.name || hit.description)] = true
         rows.push({
             id: String(ids[i]),
             label: saved ? saved.label : String(ids[i]),
-            live: findLive(saved, live),
+            live: hit,
             pending: false
         })
     }
-    if (rows.length) return rows
-    // A profile with no saved displays (the Default fallback) shows the live
-    // ones; picking a scale or mode adopts the display into the profile.
+    // Every connected display the profile does not know about still gets a
+    // row — the laptop's built-in panel on a fresh profile, a hotel HDMI on
+    // an exact desk layout. Picking a scale or mode adopts it.
     var seen = {}
     for (var l = 0; l < live.length; l++) {
         if (!liveIsReal(live[l])) continue
+        var key = String(live[l].name || live[l].description)
+        if (!key || claimed[key]) continue
         var mon = normalizeMonitor(live[l])
         if (!mon || seen[mon.id]) continue
         seen[mon.id] = true

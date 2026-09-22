@@ -2194,11 +2194,12 @@ Panel {
                     }
                     SectionCard {
                         title: "ARRANGEMENT"
-                        hint: "Drag displays to arrange; edges snap. Toggle a display off only when at least one stays on. Scale and resolution are saved per display and re-applied with this profile. A profile with no saved displays lists the connected ones; picking a scale or resolution adopts that display."
+                        hint: "Drag displays to arrange; edges snap. Toggle a display off only when at least one stays on. Scale and resolution are saved per display and re-applied with this profile. Connected displays this profile does not know about are listed too — on a laptop that always includes the built-in panel — and picking a scale or resolution adopts them."
                         foreground: root.foreground
                         fontFamily: root.fontFamily
                         fillAvailable: true
                     Repeater {
+                        id: arrangeRows
                         model: Model.profileDisplayRows(root.config, root.activeProfile, root.liveMonitors)
                         delegate: ColumnLayout {
                             required property var modelData
@@ -2324,6 +2325,16 @@ Panel {
                                 Item { Layout.fillWidth: true }
                             }
                         }
+                    }
+                    Text {
+                        visible: arrangeRows.count === 0
+                        Layout.fillWidth: true
+                        textFormat: Text.PlainText
+                        text: "No displays detected — the live list loads when the panel opens."
+                        color: root.dim
+                        font.family: root.fontFamily
+                        font.pixelSize: Style.font.caption
+                        wrapMode: Text.WordWrap
                     }
                     MonitorLayout {
                         Layout.fillWidth: true

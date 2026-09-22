@@ -848,3 +848,14 @@ if (!soloAfter.monitors.length || soloAfter.monitors[0] !== "lg-display-0x07c6")
 const again = m.captureLiveMonitorIntoProfile(adopted.config, "solo", lapLive)
 const soloTwice = again.config.profiles.filter(function(p) { return p.id === "solo" })[0]
 if (soloTwice.monitors.length !== 1) throw new Error("adopt is idempotent")
+
+// Connected displays the profile does not know always get a pending row —
+// the laptop panel under a desk profile, a hotel HDMI, anything.
+const hdmiLive = { name: "DP-1", description: "Generic HDMI FHD", serial: "", scale: 1, width: 1920, height: 1080, refreshRate: 60, x: 1440, y: 0 }
+const mixedRows = m.profileDisplayRows(rowsCfg, rowsCfg.profiles[0], [hdmiLive])
+if (mixedRows.length !== 2) throw new Error("unclaimed live display appends a row")
+if (mixedRows[0].pending !== false || mixedRows[0].live !== null) throw new Error("saved display with no live hit stays first")
+if (mixedRows[1].pending !== true || mixedRows[1].live.name !== "DP-1") throw new Error("unclaimed display is pending with live hit")
+const bothRows = m.profileDisplayRows(rowsCfg, rowsCfg.profiles[0], [lapLive, hdmiLive])
+if (bothRows.length !== 2) throw new Error("claimed display is not duplicated")
+if (bothRows[0].live.name !== "eDP-1" || bothRows[1].live.name !== "DP-1") throw new Error("claimed + unclaimed rows attach the right live hits")
