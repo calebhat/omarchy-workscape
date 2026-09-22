@@ -148,6 +148,43 @@ cmd_match_id() {
   live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --print-id
 }
 
+# Direct control-surface hook: set one output's scale and/or mode in place.
+# Empty args keep the current value; position never moves.
+cmd_set_output() {
+  local conn=$1 scale=${2:-} mode=${3:-}
+  [[ $conn =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || { echo "bad connector: $conn" >&2; return 1; }
+  [[ $conn != *HEADLESS* ]] || { echo "no headless outputs" >&2; return 1; }
+  local mon
+  mon=$(live_monitors_json | jq -c --arg n "$conn" '[.[] | select(.name==$n)][0] // empty')
+  [[ -n $mon ]] || { echo "monitor not found: $conn" >&2; return 1; }
+  local w h r sc x y
+  w=$(printf '%s' "$mon" | jq -r '.width // 0')
+  h=$(printf '%s' "$mon" | jq -r '.height // 0')
+  r=$(printf '%s' "$mon" | jq -r '.refreshRate // 60')
+  sc=$(printf '%s' "$mon" | jq -r '.scale // 1')
+  x=$(printf '%s' "$mon" | jq -r '.x // 0')
+  y=$(printf '%s' "$mon" | jq -r '.y // 0')
+  if [[ -n $mode ]]; then
+    if [[ $mode =~ ^([0-9]{3,5})x([0-9]{3,5})@([0-9]{1,3}(\.[0-9]{1,3})?)$ ]]; then
+      w=${BASH_REMATCH[1]}
+      h=${BASH_REMATCH[2]}
+      r=${BASH_REMATCH[3]}
+    else
+      echo "bad mode: $mode" >&2
+      return 1
+    fi
+  fi
+  if [[ -n $scale ]]; then
+    [[ $scale =~ ^[0-9]\.?[0-9]{0,2}$ ]] || { echo "bad scale: $scale" >&2; return 1; }
+    sc=$scale
+  fi
+  (( w > 0 && h > 0 )) || { echo "monitor has no mode: $conn" >&2; return 1; }
+  local hz
+  hz=$(printf '%.2f' "$r" | sed -e 's/0*$//' -e 's/\.$//')
+  timeout 3 hyprctl eval "$(printf 'hl.monitor({ output = "%s", mode = "%sx%s@%s", position = "%sx%s", scale = %s })' "$conn" "$w" "$h" "$hz" "$x" "$y" "$sc")" </dev/null >/dev/null 2>&1 || true
+  echo "set $conn ${w}x${h}@${hz} scale=${sc} pos=${x}x${y}"
+}
+
 notify() {
   local title=$1 body=$2
   if command -v notify-send >/dev/null 2>&1; then
@@ -1271,6 +1308,7 @@ case "${1:-}" in
   --status) cmd_status ;;
   --live-status) cmd_live_status ;;
   --sync-active-profile) cmd_sync_active_profile ;;
+  --set-output) shift; cmd_set_output "$@" ;;
   --match-id) cmd_match_id ;;
   --launch) shift; cmd_launch "$@" ;;
   --launch-all) shift; cmd_launch_all "${1:-false}" ;;
@@ -1297,6 +1335,7 @@ workscape.sh — helper for io.github.calebhat.workscape
   --live-status                current monitors + matching profile
   --sync-active-profile        set settings.activeProfileId to the matching layout
   --match-id                   print matching profile id
+  --set-output <conn> [scale] [WxH@Hz]  set one live output now (empty args keep current)
   --launch <ws> <exec> [silent]  launch single app on workspace
   --launch-all                 boot path (no-op unless applyOnBoot)
   --force-launch-all           launch matching profile regardless of boot flag

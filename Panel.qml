@@ -1425,6 +1425,17 @@ Panel {
         }
     }
     Process { id: refreshServiceProc; command: ["omarchy-shell", "-q", "io.github.calebhat.workscape", "refreshConfig"] }
+    function applyOutputNow(liveHit, scale, mode) {
+        if (!liveHit || !liveHit.name) return
+        setOutputProc.command = root.helperRun(
+            ["bash", root.script, "--set-output", String(liveHit.name), String(scale || ""), String(mode || "")], 8, 4096)
+        setOutputProc.running = true
+    }
+    Process {
+        id: setOutputProc
+        stdout: SplitParser { onRead: function(d) { if (d.length > 1024) return; root.statusText = d; clearStatusTimer.restart() } }
+        stderr: SplitParser { onRead: function(d){ if (d.length > 1024) return; console.warn("[workscape] set-output] " + d) } }
+    }
     Process {
         id: applyProc
         stdout: SplitParser { onRead: function(d){ console.log("[workscape] " + d) } }
@@ -2214,7 +2225,6 @@ Panel {
                             readonly property real liveScale: liveHit ? (Number(liveHit.scale) || 0) : 0
                             readonly property var savedScale: profile.monitorScales ? profile.monitorScales[monitorId] : undefined
                             readonly property var savedMode: profile.monitorModes ? profile.monitorModes[monitorId] : undefined
-                            readonly property var scaleSteps: [0, 1, 1.25, 1.5, 1.75, 2, 2.5, 3]
                             readonly property var modeSteps: {
                                 var list = []
                                 var seen = {}
@@ -2244,29 +2254,48 @@ Panel {
                                 root.config = res.config
                                 return res.id
                             }
-                            function cycleScale() {
-                                var id = captureId()
-                                if (!id) return
-                                var cur = (savedScale === undefined || savedScale === null) ? 0 : Number(savedScale)
-                                var idx = -1
-                                for (var s = 0; s < scaleSteps.length; s++) {
-                                    if (Math.abs(scaleSteps[s] - cur) < 0.001) { idx = s; break }
+                            readonly property var scaleOptions: {
+                                var presets = [1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+                                var list = [{ value: "auto", label: liveScale > 0 ? "Auto (" + liveScale + "×)" : "Auto" }]
+                                var hasLive = false
+                                for (var i = 0; i < presets.length; i++) {
+                                    list.push({ value: String(presets[i]), label: presets[i] + "×" })
+                                    if (liveScale > 0 && Math.abs(presets[i] - liveScale) < 0.001) hasLive = true
                                 }
-                                var next = idx < 0 ? 0 : scaleSteps[(idx + 1) % scaleSteps.length]
-                                root.setMonitorScale(root.activeProfileId, id, next === 0 ? null : next)
+                                if (liveScale > 0 && !hasLive) list.push({ value: String(liveScale), label: liveScale + "× (current)" })
+                                return list
                             }
-                            function cycleMode() {
+                            readonly property var modeOptions: {
+                                var list = [{ value: "auto", label: liveHit ? "Auto (" + liveHit.width + "x" + liveHit.height + ")" : "Auto" }]
+                                for (var i = 1; i < modeSteps.length; i++) {
+                                    var m = modeSteps[i]
+                                    list.push({ value: m.width + "x" + m.height + "@" + m.refreshRate, label: modeLabel(m) })
+                                }
+                                return list
+                            }
+                            readonly property string scaleValue: (savedScale === undefined || savedScale === null) ? "auto" : String(savedScale)
+                            readonly property string modeValue: (savedMode === undefined || savedMode === null) ? "auto" : (savedMode.width + "x" + savedMode.height + "@" + savedMode.refreshRate)
+                            function scaleChosen(v) {
                                 var id = captureId()
                                 if (!id) return
-                                var idx = -1
-                                for (var s = 0; s < modeSteps.length; s++) {
-                                    var p = modeSteps[s]
-                                    if (savedMode && p && p.width === Number(savedMode.width)
-                                            && p.height === Number(savedMode.height)
-                                            && Math.abs(p.refreshRate - Number(savedMode.refreshRate)) < 0.5) { idx = s; break }
+                                if (v === "auto") {
+                                    root.setMonitorScale(root.activeProfileId, id, null)
+                                    return
                                 }
-                                var next = idx < 0 ? 0 : modeSteps[(idx + 1) % modeSteps.length]
-                                root.setMonitorMode(root.activeProfileId, id, next)
+                                root.setMonitorScale(root.activeProfileId, id, Number(v))
+                                root.applyOutputNow(liveHit, v, "")
+                            }
+                            function modeChosen(v) {
+                                var id = captureId()
+                                if (!id) return
+                                if (v === "auto") {
+                                    root.setMonitorMode(root.activeProfileId, id, null)
+                                    return
+                                }
+                                var p = Model.parseModeString(v)
+                                if (!p) return
+                                root.setMonitorMode(root.activeProfileId, id, p)
+                                root.applyOutputNow(liveHit, "", v)
                             }
                             Layout.fillWidth: true
                             spacing: Style.space(4)
@@ -2299,28 +2328,39 @@ Panel {
                                 Layout.fillWidth: true
                                 spacing: Style.space(8)
                                 Text {
-                                    text: "Scale · Res"
+                                    text: "Scale"
                                     color: root.dim
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
                                 }
-                                Button {
-                                    text: {
-                                        if (savedScale !== undefined && savedScale !== null)
-                                            return "Scale: " + savedScale + "×"
-                                        return liveScale > 0 ? "Scale: Auto (" + liveScale + "×)" : "Scale: Auto"
-                                    }
-                                    selected: savedScale !== undefined && savedScale !== null
-                                    onClicked: cycleScale()
+                                Dropdown {
+                                    width: Style.spacing.dropdownWidth
+                                    label: ""
+                                    showLabel: false
+                                    fontFamily: root.fontFamily
+                                    options: scaleOptions
+                                    value: scaleValue
+                                    onChanged: function(v) { if (v !== scaleValue) scaleChosen(v) }
                                 }
-                                Button {
+                                Text {
                                     visible: modeSteps.length > 1
-                                    text: "Res: " + modeLabel(savedMode || null)
-                                    selected: savedMode !== undefined && savedMode !== null
-                                    onClicked: cycleMode()
+                                    text: "Res"
+                                    color: root.dim
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                }
+                                Dropdown {
+                                    visible: modeSteps.length > 1
+                                    width: Style.spacing.dropdownWidth
+                                    label: ""
+                                    showLabel: false
+                                    fontFamily: root.fontFamily
+                                    options: modeOptions
+                                    value: modeValue
+                                    onChanged: function(v) { if (v !== modeValue) modeChosen(v) }
                                 }
                                 HintMark {
-                                    tooltipText: "Auto keeps whatever the display runs now. A picked scale or resolution is re-applied to this display every time the profile applies. Saved per profile — the same display can run different settings elsewhere."
+                                    tooltipText: "Auto keeps whatever the display runs now. A picked value is set on the display immediately and re-applied every time this profile applies. Saved per profile — the same display can run different settings elsewhere."
                                 }
                                 Item { Layout.fillWidth: true }
                             }
