@@ -185,6 +185,65 @@ cmd_set_output() {
   echo "set $conn ${w}x${h}@${hz} scale=${sc} pos=${x}x${y}"
 }
 
+# Dropdown path: pin the value in the profile, set it live, and re-arm the
+# scan guard — one serialized writer so the 30s scan can never enforce a
+# pre-edit config snapshot over a change that is already on screen.
+cmd_set_profile_output() {
+  local profile_id=$1 monitor_id=$2 scale=${3:-} mode=${4:-}
+  [[ $profile_id =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad profile id" >&2; return 1; }
+  [[ $monitor_id =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad monitor id" >&2; return 1; }
+  ensure_config || return 1
+  exec 9>>"$STATE_DIR/apply.lock"
+  flock 9
+
+  local mode_json=""
+  if [[ -n $mode && $mode != "auto" ]]; then
+    if [[ $mode =~ ^([0-9]{3,5})x([0-9]{3,5})@([0-9]{1,3}(\.[0-9]{1,3})?)$ ]]; then
+      mode_json="{\"width\":${BASH_REMATCH[1]},\"height\":${BASH_REMATCH[2]},\"refreshRate\":${BASH_REMATCH[3]}}"
+    else
+      echo "bad mode: $mode" >&2
+      return 1
+    fi
+  fi
+  local scale_set="" mode_set=""
+  if [[ -n $scale && $scale != "auto" ]]; then
+    [[ $scale =~ ^[0-9]\.?[0-9]{0,2}$ ]] || { echo "bad scale: $scale" >&2; return 1; }
+    scale_set=".monitorScales[\$mid] = ($scale)"
+  elif [[ $scale == "auto" ]]; then
+    scale_set="del(.monitorScales[\$mid])"
+  fi
+  if [[ -n $mode_json ]]; then
+    mode_set=".monitorModes[\$mid] = ($mode_json)"
+  elif [[ $mode == "auto" ]]; then
+    mode_set="del(.monitorModes[\$mid])"
+  fi
+  local mutation="${scale_set}${mode_set}"
+  [[ -n $mutation ]] || { echo "nothing to set" >&2; return 1; }
+  if ! read_config | jq --arg id "$profile_id" --arg mid "$monitor_id" \
+      ".profiles |= map(if .id == \$id then ($mutation) else . end)" \
+      | python3 "$STATEIO" write-config >/dev/null; then
+    echo "config write failed" >&2
+    return 1
+  fi
+
+  local conn="" live_scale="" live_mode=""
+  conn=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --connector-for "$monitor_id" 2>/dev/null | tr -d '\n')
+  if [[ -n $conn ]]; then
+    [[ -n $scale && $scale != "auto" ]] && live_scale=$scale
+    [[ -n $mode_json ]] && live_mode=$mode
+    cmd_set_output "$conn" "$live_scale" "$live_mode" || true
+  fi
+
+  # Re-arm the scan guard so the settled, just-set state is the baseline.
+  local settle fp matched
+  settle=$(python3 "$PLUGIN_DIR/scripts/monitorsettle" --wait --timeout 4 2>/dev/null || true)
+  fp=$(printf '%s' "$settle" | jq -r '.fingerprint // empty' 2>/dev/null || true)
+  matched=$(cmd_match_id 2>/dev/null | tr -d '\n')
+  [[ -n $fp ]] && state_put last_auto_fp "$fp"
+  [[ -n $matched ]] && state_put last_auto_profile "$matched"
+  echo "saved $monitor_id for $profile_id (scale=${scale:-keep} mode=${mode:-keep})"
+}
+
 cmd_apply_on_monitor_change() {
   # Event + periodic scan body: settle, match, and apply at most what changed.
   ensure_config || exit 1
@@ -1359,6 +1418,7 @@ case "${1:-}" in
   --live-status) cmd_live_status ;;
   --sync-active-profile) cmd_sync_active_profile ;;
   --set-output) shift; cmd_set_output "$@" ;;
+  --set-profile-output) shift; cmd_set_profile_output "$@" ;;
   --apply-on-monitor-change) cmd_apply_on_monitor_change ;;
   --list-docks) python3 "$PLUGIN_DIR/scripts/dockid" --list ;;
   --capture-dock) python3 "$PLUGIN_DIR/scripts/dockid" --capture ;;
@@ -1389,6 +1449,7 @@ workscape.sh — helper for io.github.calebhat.workscape
   --sync-active-profile        set settings.activeProfileId to the matching layout
   --match-id                   print matching profile id
   --set-output <conn> [scale] [WxH@Hz]  set one live output now (empty args keep current)
+  --set-profile-output <profile> <mon> <scale|auto> [WxH@Hz|auto]  pin+set+re-arm in one
   --apply-on-monitor-change    wait for displays to settle, then apply the matching profile (scan body)
   --list-docks                 JSON of USB devices usable as dock bindings
   --capture-dock               JSON of the best connected dock candidate (or null)

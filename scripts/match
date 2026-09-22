@@ -830,6 +830,7 @@ def main() -> int:
     parser.add_argument("--live-json", default="")
     parser.add_argument("--profile-id", default="")
     parser.add_argument("--print-id", action="store_true")
+    parser.add_argument("--connector-for", default="", help="print the live connector name for a saved monitor id")
     parser.add_argument("--bindings", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--apply-outputs", action="store_true")
@@ -935,6 +936,14 @@ def main() -> int:
     if args.print_id:
         print((matched or {}).get("id") or "")
         return 0 if matched else 2
+    if args.connector_for:
+        saved = monitor_by_id(cfg, args.connector_for.strip())
+        hit = find_live(saved, live) if saved else None
+        name = str((hit or {}).get("name") or "")
+        if name:
+            print(name)
+            return 0
+        return 3
     if args.bindings:
         if not matched:
             json.dump({}, sys.stdout)

@@ -1484,16 +1484,15 @@ Panel {
         }
     }
     Process { id: refreshServiceProc; command: ["omarchy-shell", "-q", "io.github.calebhat.workscape", "refreshConfig"] }
-    function applyOutputNow(liveHit, scale, mode) {
-        if (!liveHit || !liveHit.name) return
-        setOutputProc.command = root.helperRun(
-            ["bash", root.script, "--set-output", String(liveHit.name), String(scale || ""), String(mode || "")], 8, 4096)
-        setOutputProc.running = true
+    function applyProfileOutputNow(profileId, monitorId, scale, mode) {
+        setProfileOutputProc.command = root.helperRun(
+            ["bash", root.script, "--set-profile-output", String(profileId), String(monitorId), String(scale || ""), String(mode || "")], 20, 4096)
+        setProfileOutputProc.running = true
     }
     Process {
-        id: setOutputProc
+        id: setProfileOutputProc
         stdout: SplitParser { onRead: function(d) { if (d.length > 1024) return; root.statusText = d; clearStatusTimer.restart() } }
-        stderr: SplitParser { onRead: function(d){ if (d.length > 1024) return; console.warn("[workscape] set-output] " + d) } }
+        stderr: SplitParser { onRead: function(d){ if (d.length > 1024) return; console.warn("[workscape] set-profile-output] " + d) } }
     }
     Process {
         id: dockCaptureProc
@@ -2354,7 +2353,7 @@ Panel {
                                     return
                                 }
                                 root.setMonitorScale(root.activeProfileId, id, Number(v))
-                                root.applyOutputNow(liveHit, v, "")
+                                root.applyProfileOutputNow(root.activeProfileId, id, v, "")
                             }
                             function modeChosen(v) {
                                 var id = captureId()
@@ -2366,7 +2365,7 @@ Panel {
                                 var p = Model.parseModeString(v)
                                 if (!p) return
                                 root.setMonitorMode(root.activeProfileId, id, p)
-                                root.applyOutputNow(liveHit, "", v)
+                                root.applyProfileOutputNow(root.activeProfileId, id, "", v)
                             }
                             Layout.fillWidth: true
                             spacing: Style.space(4)
@@ -2800,8 +2799,8 @@ Panel {
                     spacing: Style.space(10)
 
                     SectionCard {
-                        title: "LOGIN"
-                        hint: "Picks one profile from connected displays, then Wi-Fi name / LAN subnet if you bound a network. One layout per environment. Middle-click the bar chip or Apply matching any time."
+                        title: "AUTO-APPLY"
+                        hint: "Both pick one profile from connected displays, then Wi-Fi name / LAN subnet if you bound a network. One layout per environment. Middle-click the bar chip or Apply matching any time."
                         foreground: root.foreground
                         fontFamily: root.fontFamily
                         WrapToggle {
@@ -2811,16 +2810,10 @@ Panel {
                             foreground: root.foreground
                             onClicked: root.setApplyOnBoot(!(root.config.settings && root.config.settings.applyOnBoot === true))
                         }
-                    }
-
-                    SectionCard {
-                        title: "DISPLAY CHANGES"
-                        hint: "On: docking or undocking waits for the displays to settle (a dock brings them up over a few seconds), then applies the matching profile on its own. A 30s scan catches late arrivals like a dock whose USB side enumerates after its monitors. Occupied workspaces are still left alone."
-                        foreground: root.foreground
-                        fontFamily: root.fontFamily
                         WrapToggle {
                             Layout.fillWidth: true
                             label: "Apply matching profile when displays change"
+                            description: "Docking waits for displays to settle, then applies on its own. A 30s scan catches late arrivals and drift."
                             checked: root.config.settings && root.config.settings.applyOnMonitorChange === true
                             foreground: root.foreground
                             onClicked: root.setApplyOnMonitorChange(!(root.config.settings && root.config.settings.applyOnMonitorChange === true))
