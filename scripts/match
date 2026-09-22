@@ -215,14 +215,43 @@ def _keyword_monitor(spec: str) -> None:
     SAFE.bounded_run(["hyprctl", "keyword", "monitor", spec], timeout=3.0)
 
 
-def enable_monitor(m: dict[str, Any]) -> None:
+def want_mode_scale(hit: dict[str, Any], want: dict[str, Any] | None) -> tuple[int, int, float, float]:
+    """Effective (width, height, refresh, scale) for a live monitor given profile overrides."""
+    want = want or {}
+    w = int(want.get("width") or hit.get("width") or 0)
+    h = int(want.get("height") or hit.get("height") or 0)
+    refresh = float(want.get("refreshRate") or hit.get("refreshRate") or 60)
+    scale = SAFE.clamp_scale(want.get("scale") if want.get("scale") is not None else (hit.get("scale") or 1))
+    return w, h, refresh, scale
+
+
+def mode_scale_differs(hit: dict[str, Any], want: dict[str, Any] | None) -> bool:
+    """True when the live mode or scale differs from the profile's override."""
+    want = want or {}
+    lw = int(hit.get("width") or 0)
+    lh = int(hit.get("height") or 0)
+    if int(want.get("width") or lw) != lw or int(want.get("height") or lh) != lh:
+        return True
+    if want.get("refreshRate") is not None:
+        try:
+            if abs(float(hit.get("refreshRate") or 0) - float(want.get("refreshRate"))) > 0.5:
+                return True
+        except (TypeError, ValueError):
+            return True
+    if want.get("scale") is not None:
+        try:
+            if abs(float(hit.get("scale") or 1) - float(want.get("scale"))) > 0.01:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def enable_monitor(m: dict[str, Any], want: dict[str, Any] | None = None) -> None:
     name = safe_connector(str(m.get("name") or ""))
     if not name:
         return
-    w = int(m.get("width") or 0)
-    h = int(m.get("height") or 0)
-    refresh = float(m.get("refreshRate") or 60)
-    scale = SAFE.clamp_scale(m.get("scale") or 1)
+    w, h, refresh, scale = want_mode_scale(m, want)
     if w <= 0 or h <= 0:
         _keyword_monitor(f"{name},preferred,auto,1")
         return
@@ -277,10 +306,10 @@ def disable_plan(enabled_names: list[str], disable_names: list[str]) -> list[str
     return plan
 
 
-def logical_size(m: dict[str, Any]) -> tuple[int, int]:
-    scale = float(m.get("scale") or 1) or 1.0
-    w = int(m.get("width") or 1920)
-    h = int(m.get("height") or 1080)
+def logical_size(m: dict[str, Any], want: dict[str, Any] | None = None) -> tuple[int, int]:
+    _w, _h, _r, scale = want_mode_scale(m, want)
+    w = int((want or {}).get("width") or m.get("width") or 1920)
+    h = int((want or {}).get("height") or m.get("height") or 1080)
     return max(200, int(round(w / scale))), max(200, int(round(h / scale)))
 
 
@@ -290,15 +319,17 @@ def _rects_overlap(ax: int, ay: int, aw: int, ah: int, bx: int, by: int, bw: int
 
 def pack_monitor_positions(
     placed: list[tuple[dict[str, Any], int, int]],
+    want: dict[str, dict[str, Any]] | None = None,
 ) -> list[tuple[dict[str, Any], int, int]]:
     """Keep saved relative layout when it does not overlap. Else sit left-to-right.
 
     Sequential hl.monitor() can overlap mid-apply (KVM auto-place + saved coords)
     and Hyprland warns 'No monitors can overlap.'
     """
+    want = want or {}
     items: list[dict[str, Any]] = []
     for hit, x, y in placed:
-        w, h = logical_size(hit)
+        w, h = logical_size(hit, want.get(str(hit.get("name") or "")))
         items.append({"hit": hit, "x": int(x), "y": int(y), "w": w, "h": h})
     overlap = False
     for i, a in enumerate(items):
@@ -319,17 +350,15 @@ def pack_monitor_positions(
     return out
 
 
-def place_monitors_batch(placed: list[tuple[dict[str, Any], int, int]]) -> None:
+def place_monitors_batch(placed: list[tuple[dict[str, Any], int, int]], want: dict[str, dict[str, Any]] | None = None) -> None:
     """One eval so Hyprland sees a complete non-overlapping layout."""
+    want = want or {}
     stmts: list[str] = []
     for hit, x, y in placed:
         name = safe_connector(str(hit.get("name") or ""))
         if not name:
             continue
-        w = int(hit.get("width") or 0)
-        h = int(hit.get("height") or 0)
-        refresh = float(hit.get("refreshRate") or 60)
-        scale = SAFE.clamp_scale(hit.get("scale") or 1)
+        w, h, refresh, scale = want_mode_scale(hit, want.get(name))
         if w <= 0 or h <= 0:
             continue
         hz = f"{refresh:.2f}".rstrip("0").rstrip(".")
@@ -380,10 +409,41 @@ def apply_outputs(
             to_disable.append(hit)
         else:
             to_enable.append(hit)
+    want_by_name: dict[str, dict[str, Any]] = {}
+    saved_scales = profile.get("monitorScales") if isinstance(profile.get("monitorScales"), dict) else {}
+    saved_modes = profile.get("monitorModes") if isinstance(profile.get("monitorModes"), dict) else {}
+    for mid in mons:
+        if str(mid) in disabled_ids:
+            continue
+        entry: dict[str, Any] = {}
+        want_scale = saved_scales.get(str(mid))
+        if want_scale is not None:
+            entry["scale"] = SAFE.clamp_scale(want_scale)
+        want_mode = saved_modes.get(str(mid)) if isinstance(saved_modes.get(str(mid)), dict) else {}
+        for key in ("width", "height"):
+            try:
+                val = int(want_mode.get(key) or 0)
+            except (TypeError, ValueError):
+                val = 0
+            if val > 0:
+                entry[key] = val
+        try:
+            hz = float(want_mode.get("refreshRate") or 0)
+        except (TypeError, ValueError):
+            hz = 0.0
+        if hz > 0:
+            entry["refreshRate"] = hz
+        if not entry:
+            continue
+        saved = monitor_by_id(cfg, str(mid))
+        hit = find_live(saved, connected) if saved else None
+        name = str((hit or {}).get("name") or "")
+        if name:
+            want_by_name[name] = entry
     changed: list[str] = []
     for m in to_enable:
         if m.get("disabled"):
-            enable_monitor(m)
+            enable_monitor(m, want_by_name.get(str(m.get("name") or "")))
             changed.append(f"on:{m.get('name')}")
     enabled_names: list[str] = []
     try:
@@ -405,12 +465,14 @@ def apply_outputs(
         if name in enabled_names:
             enabled_names.remove(name)
     layout = profile.get("monitorLayout") or {}
+    try:
+        live_now = SAFE.hypr_json(["monitors", "all"])
+    except Exception:
+        live_now = live_list
+    placed: list[tuple[dict[str, Any], int, int]] = []
+    can_persist = False
     if layout:
-        try:
-            live_now = SAFE.hypr_json(["monitors", "all"])
-        except Exception:
-            live_now = live_list
-        placed: list[tuple[dict[str, Any], int, int]] = []
+        can_persist = True
         for mid, pos in layout.items():
             if str(mid) in disabled_ids:
                 continue
@@ -423,43 +485,72 @@ def apply_outputs(
             x = int((pos or {}).get("x") or 0)
             y = int((pos or {}).get("y") or 0)
             placed.append((hit, x, y))
-        final = pack_monitor_positions(origin_shift_layout(placed))
-        needs_move = False
-        for hit, x, y in final:
-            if abs(int(hit.get("x") or 0) - int(x)) > 64 or abs(int(hit.get("y") or 0) - int(y)) > 64:
-                needs_move = True
-                break
-        if not needs_move:
-            return {"changed": changed}
-        place_monitors_batch(final)
-        for hit, x, y in final:
-            changed.append(f"pos:{hit.get('name')}@{x}x{y}")
-        if final:
-            time.sleep(0.35)
-            try:
-                live_after = SAFE.hypr_json(["monitors"])
-            except Exception:
-                live_after = []
-            persist: dict[str, dict[str, int]] = {}
-            for mid in mons:
-                if str(mid) in disabled_ids:
-                    continue
-                saved = monitor_by_id(cfg, str(mid))
-                hit = find_live(saved, live_after, enabled_only=True) if saved else None
-                if not hit:
-                    continue
-                persist[str(mid)] = {"x": int(hit.get("x") or 0), "y": int(hit.get("y") or 0)}
-            if persist:
-                profile["monitorLayout"] = persist
-                changed.append("persisted")
-                if config_path:
-                    for p in cfg.get("profiles") or []:
-                        if p.get("id") == profile.get("id"):
-                            p["monitorLayout"] = persist
-                    try:
-                        save_config(cfg, config_path)
-                    except Exception:
-                        pass
+        final = pack_monitor_positions(origin_shift_layout(placed), want_by_name)
+    elif want_by_name:
+        # No arranged canvas for this profile: re-assert scales / modes where
+        # the monitors already sit, without packing or shifting positions.
+        for mid in mons:
+            if str(mid) in disabled_ids:
+                continue
+            saved = monitor_by_id(cfg, str(mid))
+            if not saved:
+                continue
+            hit = find_live(saved, live_now, enabled_only=True)
+            if not hit:
+                continue
+            placed.append((hit, int(hit.get("x") or 0), int(hit.get("y") or 0)))
+        final = placed
+    else:
+        return {"changed": changed}
+    needs_move = False
+    for hit, x, y in final:
+        if abs(int(hit.get("x") or 0) - int(x)) > 64 or abs(int(hit.get("y") or 0) - int(y)) > 64:
+            needs_move = True
+            break
+        if mode_scale_differs(hit, want_by_name.get(str(hit.get("name") or ""))):
+            needs_move = True
+            break
+    if not needs_move:
+        return {"changed": changed}
+    place_monitors_batch(final, want_by_name)
+    for hit, x, y in final:
+        name = str(hit.get("name") or "")
+        want = want_by_name.get(name)
+        if want and mode_scale_differs(hit, want):
+            w, h, refresh, scale = want_mode_scale(hit, want)
+            if (want.get("width") or want.get("height") or want.get("refreshRate")) is not None:
+                hz = f"{refresh:.2f}".rstrip("0").rstrip(".")
+                changed.append(f"mode:{name}@{w}x{h}@{hz}")
+            if want.get("scale") is not None:
+                changed.append(f"scale:{name}@{scale:g}")
+        if abs(int(hit.get("x") or 0) - int(x)) > 64 or abs(int(hit.get("y") or 0) - int(y)) > 64:
+            changed.append(f"pos:{name}@{x}x{y}")
+    if final and can_persist:
+        time.sleep(0.35)
+        try:
+            live_after = SAFE.hypr_json(["monitors"])
+        except Exception:
+            live_after = []
+        persist: dict[str, dict[str, int]] = {}
+        for mid in mons:
+            if str(mid) in disabled_ids:
+                continue
+            saved = monitor_by_id(cfg, str(mid))
+            hit = find_live(saved, live_after, enabled_only=True) if saved else None
+            if not hit:
+                continue
+            persist[str(mid)] = {"x": int(hit.get("x") or 0), "y": int(hit.get("y") or 0)}
+        if persist:
+            profile["monitorLayout"] = persist
+            changed.append("persisted")
+            if config_path:
+                for p in cfg.get("profiles") or []:
+                    if p.get("id") == profile.get("id"):
+                        p["monitorLayout"] = persist
+                try:
+                    save_config(cfg, config_path)
+                except Exception:
+                    pass
     return {"changed": changed}
 
 
@@ -497,6 +588,8 @@ def live_status(cfg: dict[str, Any], live_list: list[dict[str, Any]], live_net: 
                 "width": m.get("width"),
                 "height": m.get("height"),
                 "scale": m.get("scale") or 1,
+                "refreshRate": m.get("refreshRate"),
+                "availableModes": [str(x) for x in (m.get("availableModes") or [])[:48]],
                 "x": m.get("x"),
                 "y": m.get("y"),
             }

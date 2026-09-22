@@ -824,11 +824,24 @@ Panel {
         prof.matchMode = "exact"
         prof.network = net
         var layout = {}
+        var scales = {}
+        var modes = {}
         for (var j = 0; j < live.length; j++) {
             if (!ids[j]) continue
             layout[ids[j]] = { x: Number(live[j].x) || 0, y: Number(live[j].y) || 0 }
+            var sc = Number(live[j].scale) || 0
+            if (sc > 0) scales[ids[j]] = sc
+            if (Number(live[j].width) > 0 && Number(live[j].height) > 0) {
+                modes[ids[j]] = {
+                    width: Number(live[j].width),
+                    height: Number(live[j].height),
+                    refreshRate: Number(live[j].refreshRate) || 60
+                }
+            }
         }
         prof.monitorLayout = Model.normalizeMonitorLayout(layout)
+        prof.monitorScales = Model.normalizeMonitorScales(scales, ids)
+        prof.monitorModes = Model.normalizeMonitorModes(modes, ids)
         cfg.profiles = cfg.profiles.concat([prof])
         cfg.settings.activeProfileId = prof.id
         var claimed = Model.claimEnvironment(cfg, prof.id, net)
@@ -905,6 +918,43 @@ Panel {
         statusText = off ? "Display off for this profile" : "Display on for this profile"
         clearStatusTimer.restart()
     }
+    function setMonitorScale(profileId, monitorId, value) {
+        var cfg = root.currentConfig()
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== profileId) continue
+            var scales = {}
+            var prev = cfg.profiles[i].monitorScales || {}
+            var keys = Object.keys(prev)
+            for (var k = 0; k < keys.length; k++) {
+                if (keys[k] !== monitorId) scales[keys[k]] = prev[keys[k]]
+            }
+            var n = Number(value)
+            if (value !== null && value !== undefined && n > 0) scales[monitorId] = n
+            cfg.profiles[i].monitorScales = Model.normalizeMonitorScales(scales, cfg.profiles[i].monitors)
+        }
+        config = cfg
+        saveConfig()
+        statusText = "Scale saved — applies when this profile applies"
+        clearStatusTimer.restart()
+    }
+    function setMonitorMode(profileId, monitorId, mode) {
+        var cfg = root.currentConfig()
+        for (var i = 0; i < cfg.profiles.length; i++) {
+            if (cfg.profiles[i].id !== profileId) continue
+            var modes = {}
+            var prev = cfg.profiles[i].monitorModes || {}
+            var keys = Object.keys(prev)
+            for (var k = 0; k < keys.length; k++) {
+                if (keys[k] !== monitorId) modes[keys[k]] = prev[keys[k]]
+            }
+            if (mode && Number(mode.width) > 0 && Number(mode.height) > 0) modes[monitorId] = mode
+            cfg.profiles[i].monitorModes = Model.normalizeMonitorModes(modes, cfg.profiles[i].monitors)
+        }
+        config = cfg
+        saveConfig()
+        statusText = "Resolution saved — applies when this profile applies"
+        clearStatusTimer.restart()
+    }
     function setMonitorLayout(positions) {
         var cfg = root.currentConfig()
         var pid = cfg.settings.activeProfileId
@@ -923,6 +973,8 @@ Panel {
         var prof = Model.profileById(cfg, pid)
         if (!prof) return
         var layout = {}
+        var scales = {}
+        var modes = {}
         var live = root.liveMonitors || []
         var ids = prof.monitors || []
         for (var i = 0; i < ids.length; i++) {
@@ -930,9 +982,22 @@ Panel {
             var hit = Model.findLive(saved, live)
             if (!hit) continue
             layout[ids[i]] = { x: Number(hit.x) || 0, y: Number(hit.y) || 0 }
+            var sc = Number(hit.scale) || 0
+            if (sc > 0) scales[ids[i]] = sc
+            if (Number(hit.width) > 0 && Number(hit.height) > 0) {
+                modes[ids[i]] = {
+                    width: Number(hit.width),
+                    height: Number(hit.height),
+                    refreshRate: Number(hit.refreshRate) || 60
+                }
+            }
         }
         for (var p = 0; p < cfg.profiles.length; p++) {
-            if (cfg.profiles[p].id === pid) cfg.profiles[p].monitorLayout = Model.normalizeMonitorLayout(layout)
+            if (cfg.profiles[p].id === pid) {
+                cfg.profiles[p].monitorLayout = Model.normalizeMonitorLayout(layout)
+                cfg.profiles[p].monitorScales = Model.normalizeMonitorScales(scales, ids)
+                cfg.profiles[p].monitorModes = Model.normalizeMonitorModes(modes, ids)
+            }
         }
         config = cfg
         saveConfig()
@@ -2120,42 +2185,123 @@ Panel {
                     }
                     SectionCard {
                         title: "ARRANGEMENT"
-                        hint: "Drag displays to arrange; edges snap. Toggle a display off only when at least one stays on."
+                        hint: "Drag displays to arrange; edges snap. Toggle a display off only when at least one stays on. Scale is saved per display and re-applied with this profile."
                         foreground: root.foreground
                         fontFamily: root.fontFamily
                         fillAvailable: true
                     Repeater {
-                        model: (root.activeProfile.monitors || []).length > 1 ? (root.activeProfile.monitors || []) : []
-                        delegate: RowLayout {
+                        model: root.activeProfile.monitors || []
+                        delegate: ColumnLayout {
                             required property var modelData
                             readonly property string monitorId: String(modelData)
                             readonly property var profile: root.activeProfile
                             readonly property int onCount: (profile.monitors || []).length - (profile.disabledMonitors || []).length
                             readonly property bool isOff: (profile.disabledMonitors || []).indexOf(monitorId) >= 0
                             readonly property bool canTurnOff: onCount > 1
-                            Layout.fillWidth: true
-                            spacing: Style.space(8)
-                            Text {
-                                Layout.fillWidth: true
-                                textFormat: Text.PlainText
-                                text: {
-                                    var m = Model.monitorById(root.config, monitorId)
-                                    return (m ? m.label : monitorId) + (isOff ? " — off" : "")
+                            readonly property var liveHit: Model.findLive(Model.monitorById(root.config, monitorId), root.liveMonitors)
+                            readonly property real liveScale: liveHit ? (Number(liveHit.scale) || 0) : 0
+                            readonly property var savedScale: profile.monitorScales ? profile.monitorScales[monitorId] : undefined
+                            readonly property var savedMode: profile.monitorModes ? profile.monitorModes[monitorId] : undefined
+                            readonly property var scaleSteps: [0, 1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+                            readonly property var modeSteps: {
+                                var list = []
+                                var seen = {}
+                                var modes = (liveHit && liveHit.availableModes) || []
+                                for (var i = 0; i < modes.length; i++) {
+                                    var p = Model.parseModeString(modes[i])
+                                    if (!p) continue
+                                    var key = p.width + "x" + p.height + "@" + Math.round(p.refreshRate)
+                                    if (seen[key]) continue
+                                    seen[key] = true
+                                    list.push(p)
                                 }
-                                color: isOff ? root.dim : root.foreground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
-                                wrapMode: Text.WordWrap
+                                list.sort(function(a, b) {
+                                    return (b.width * b.height) - (a.width * a.height) || (b.refreshRate - a.refreshRate)
+                                })
+                                return [null].concat(list.slice(0, 12))
                             }
-                            ToggleSwitch {
-                                checked: !isOff
-                                foreground: root.foreground
-                                accent: Color.accent
-                                opacity: (isOff || canTurnOff) ? 1 : 0.4
-                                onToggled: {
-                                    if (!isOff && !canTurnOff) return
-                                    root.setMonitorDisabled(root.activeProfileId, monitorId, checked === false)
+                            function modeLabel(p) {
+                                if (!p) return liveHit ? "Auto (" + liveHit.width + "x" + liveHit.height + ")" : "Auto"
+                                return p.width + "x" + p.height + "@" + (Math.round(p.refreshRate * 100) / 100) + "Hz"
+                            }
+                            function cycleScale() {
+                                var cur = (savedScale === undefined || savedScale === null) ? 0 : Number(savedScale)
+                                var idx = -1
+                                for (var s = 0; s < scaleSteps.length; s++) {
+                                    if (Math.abs(scaleSteps[s] - cur) < 0.001) { idx = s; break }
                                 }
+                                var next = idx < 0 ? 0 : scaleSteps[(idx + 1) % scaleSteps.length]
+                                root.setMonitorScale(root.activeProfileId, monitorId, next === 0 ? null : next)
+                            }
+                            function cycleMode() {
+                                var idx = -1
+                                for (var s = 0; s < modeSteps.length; s++) {
+                                    var p = modeSteps[s]
+                                    if (savedMode && p && p.width === Number(savedMode.width)
+                                            && p.height === Number(savedMode.height)
+                                            && Math.abs(p.refreshRate - Number(savedMode.refreshRate)) < 0.5) { idx = s; break }
+                                }
+                                var next = idx < 0 ? 0 : modeSteps[(idx + 1) % modeSteps.length]
+                                root.setMonitorMode(root.activeProfileId, monitorId, next)
+                            }
+                            Layout.fillWidth: true
+                            spacing: Style.space(4)
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(8)
+                                Text {
+                                    Layout.fillWidth: true
+                                    textFormat: Text.PlainText
+                                    text: {
+                                        var m = Model.monitorById(root.config, monitorId)
+                                        return (m ? m.label : monitorId) + (isOff ? " — off" : "")
+                                    }
+                                    color: isOff ? root.dim : root.foreground
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                    wrapMode: Text.WordWrap
+                                }
+                                ToggleSwitch {
+                                    visible: onCount > 1 || isOff
+                                    checked: !isOff
+                                    foreground: root.foreground
+                                    accent: Color.accent
+                                    opacity: (isOff || canTurnOff) ? 1 : 0.4
+                                    onToggled: {
+                                        if (!isOff && !canTurnOff) return
+                                        root.setMonitorDisabled(root.activeProfileId, monitorId, checked === false)
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                visible: !isOff
+                                Layout.fillWidth: true
+                                spacing: Style.space(8)
+                                Text {
+                                    text: "Scale · Res"
+                                    color: root.dim
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                }
+                                Button {
+                                    text: {
+                                        if (savedScale !== undefined && savedScale !== null)
+                                            return "Scale: " + savedScale + "×"
+                                        return liveScale > 0 ? "Scale: Auto (" + liveScale + "×)" : "Scale: Auto"
+                                    }
+                                    selected: savedScale !== undefined && savedScale !== null
+                                    onClicked: cycleScale()
+                                }
+                                Button {
+                                    visible: modeSteps.length > 1
+                                    text: "Res: " + modeLabel(savedMode || null)
+                                    selected: savedMode !== undefined && savedMode !== null
+                                    onClicked: cycleMode()
+                                }
+                                HintMark {
+                                    tooltipText: "Auto keeps whatever the display runs now. A picked scale or resolution is re-applied to this display every time the profile applies. Saved per profile — the same display can run different settings elsewhere."
+                                }
+                                Item { Layout.fillWidth: true }
                             }
                         }
                     }
