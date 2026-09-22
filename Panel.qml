@@ -977,6 +977,15 @@ Panel {
         var modes = {}
         var live = root.liveMonitors || []
         var ids = prof.monitors || []
+        if (!ids.length) {
+            // A profile with no saved displays adopts the connected ones here.
+            for (var c = 0; c < live.length; c++) {
+                var got = Model.captureLiveMonitorIntoProfile(cfg, pid, live[c])
+                cfg = got.config
+                if (got.id && ids.indexOf(got.id) < 0) ids.push(got.id)
+            }
+            prof = Model.profileById(cfg, pid) || prof
+        }
         for (var i = 0; i < ids.length; i++) {
             var saved = Model.monitorById(cfg, ids[i])
             var hit = Model.findLive(saved, live)
@@ -2185,20 +2194,22 @@ Panel {
                     }
                     SectionCard {
                         title: "ARRANGEMENT"
-                        hint: "Drag displays to arrange; edges snap. Toggle a display off only when at least one stays on. Scale is saved per display and re-applied with this profile."
+                        hint: "Drag displays to arrange; edges snap. Toggle a display off only when at least one stays on. Scale and resolution are saved per display and re-applied with this profile. A profile with no saved displays lists the connected ones; picking a scale or resolution adopts that display."
                         foreground: root.foreground
                         fontFamily: root.fontFamily
                         fillAvailable: true
                     Repeater {
-                        model: root.activeProfile.monitors || []
+                        model: Model.profileDisplayRows(root.config, root.activeProfile, root.liveMonitors)
                         delegate: ColumnLayout {
                             required property var modelData
-                            readonly property string monitorId: String(modelData)
+                            readonly property string monitorId: String(modelData.id)
+                            readonly property string rowLabel: String(modelData.label || monitorId)
+                            readonly property bool pending: modelData.pending === true
                             readonly property var profile: root.activeProfile
                             readonly property int onCount: (profile.monitors || []).length - (profile.disabledMonitors || []).length
                             readonly property bool isOff: (profile.disabledMonitors || []).indexOf(monitorId) >= 0
                             readonly property bool canTurnOff: onCount > 1
-                            readonly property var liveHit: Model.findLive(Model.monitorById(root.config, monitorId), root.liveMonitors)
+                            readonly property var liveHit: modelData.live || null
                             readonly property real liveScale: liveHit ? (Number(liveHit.scale) || 0) : 0
                             readonly property var savedScale: profile.monitorScales ? profile.monitorScales[monitorId] : undefined
                             readonly property var savedMode: profile.monitorModes ? profile.monitorModes[monitorId] : undefined
@@ -2224,16 +2235,28 @@ Panel {
                                 if (!p) return liveHit ? "Auto (" + liveHit.width + "x" + liveHit.height + ")" : "Auto"
                                 return p.width + "x" + p.height + "@" + (Math.round(p.refreshRate * 100) / 100) + "Hz"
                             }
+                            function captureId() {
+                                if ((profile.monitors || []).indexOf(monitorId) >= 0) return monitorId
+                                if (!liveHit) return ""
+                                var res = Model.captureLiveMonitorIntoProfile(root.currentConfig(), root.activeProfileId, liveHit)
+                                if (!res.id) return ""
+                                root.config = res.config
+                                return res.id
+                            }
                             function cycleScale() {
+                                var id = captureId()
+                                if (!id) return
                                 var cur = (savedScale === undefined || savedScale === null) ? 0 : Number(savedScale)
                                 var idx = -1
                                 for (var s = 0; s < scaleSteps.length; s++) {
                                     if (Math.abs(scaleSteps[s] - cur) < 0.001) { idx = s; break }
                                 }
                                 var next = idx < 0 ? 0 : scaleSteps[(idx + 1) % scaleSteps.length]
-                                root.setMonitorScale(root.activeProfileId, monitorId, next === 0 ? null : next)
+                                root.setMonitorScale(root.activeProfileId, id, next === 0 ? null : next)
                             }
                             function cycleMode() {
+                                var id = captureId()
+                                if (!id) return
                                 var idx = -1
                                 for (var s = 0; s < modeSteps.length; s++) {
                                     var p = modeSteps[s]
@@ -2242,7 +2265,7 @@ Panel {
                                             && Math.abs(p.refreshRate - Number(savedMode.refreshRate)) < 0.5) { idx = s; break }
                                 }
                                 var next = idx < 0 ? 0 : modeSteps[(idx + 1) % modeSteps.length]
-                                root.setMonitorMode(root.activeProfileId, monitorId, next)
+                                root.setMonitorMode(root.activeProfileId, id, next)
                             }
                             Layout.fillWidth: true
                             spacing: Style.space(4)
@@ -2252,11 +2275,8 @@ Panel {
                                 Text {
                                     Layout.fillWidth: true
                                     textFormat: Text.PlainText
-                                    text: {
-                                        var m = Model.monitorById(root.config, monitorId)
-                                        return (m ? m.label : monitorId) + (isOff ? " — off" : "")
-                                    }
-                                    color: isOff ? root.dim : root.foreground
+                                    text: rowLabel + (isOff ? " — off" : "") + (pending ? " — connected, not saved in this profile yet" : "")
+                                    color: (isOff || pending) ? root.dim : root.foreground
                                     font.family: root.fontFamily
                                     font.pixelSize: Style.font.caption
                                     wrapMode: Text.WordWrap

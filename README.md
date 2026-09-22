@@ -126,7 +126,7 @@ SSID names can be spoofed. Treat network matching as home vs office convenience,
 - Turn a display **off** for this profile (keep at least one on).
 - Match mode: **exact layout** vs **all required present**.
 - Capture live arrangement after you rearrange in the compositor.
-- **Scale / Res per display**: each display row has a Scale cycle (Auto / 1 / 1.25 / 1.5 / 1.75 / 2 / 2.5 / 3) and a Resolution cycle fed by the display’s own mode list. **Auto** keeps whatever the display runs now; a picked value is written back with the profile every apply, including a fractional laptop panel scale that Hyprland’s auto rules get wrong. Saved per profile, so the same display can run different settings elsewhere. Saving a profile or capturing the arrangement snapshots the current scale and mode; cycle back to **Auto** to unpin.
+- **Scale / Res per display**: each display row has a Scale cycle (Auto / 1 / 1.25 / 1.5 / 1.75 / 2 / 2.5 / 3) and a Resolution cycle fed by the display’s own mode list. **Auto** keeps whatever the display runs now; a picked value is written back with the profile every apply, including a fractional laptop panel scale that Hyprland’s auto rules get wrong. Saved per profile, so the same display can run different settings elsewhere. Saving a profile or capturing the arrangement snapshots the current scale and mode; cycle back to **Auto** to unpin. A profile with no saved displays (the Default fallback) lists the connected ones instead, marked *not saved in this profile yet* — picking a scale or resolution (or capturing the arrangement) adopts that display, and the profile then requires it like any other.
 
 ### 3. Workspaces — presets, tiling, locks, overflow
 

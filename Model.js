@@ -2676,6 +2676,50 @@ function upsertLiveMonitor(cfg, live) {
     return { config: out, id: mon.id }
 }
 
+function captureLiveMonitorIntoProfile(cfg, profileId, live) {
+    var up = upsertLiveMonitor(cfg, live)
+    if (!up.id) return { config: cfg, id: "" }
+    for (var i = 0; i < up.config.profiles.length; i++) {
+        var p = up.config.profiles[i]
+        if (p.id !== profileId) continue
+        var mons = p.monitors || []
+        if (mons.indexOf(up.id) < 0 && mons.length < 8) p.monitors = mons.concat([up.id])
+    }
+    return up
+}
+
+function profileDisplayRows(cfg, profile, liveList) {
+    var rows = []
+    var live = liveList || []
+    var ids = (profile && profile.monitors) || []
+    for (var i = 0; i < ids.length; i++) {
+        var saved = monitorById(cfg, ids[i])
+        rows.push({
+            id: String(ids[i]),
+            label: saved ? saved.label : String(ids[i]),
+            live: findLive(saved, live),
+            pending: false
+        })
+    }
+    if (rows.length) return rows
+    // A profile with no saved displays (the Default fallback) shows the live
+    // ones; picking a scale or mode adopts the display into the profile.
+    var seen = {}
+    for (var l = 0; l < live.length; l++) {
+        if (!liveIsReal(live[l])) continue
+        var mon = normalizeMonitor(live[l])
+        if (!mon || seen[mon.id]) continue
+        seen[mon.id] = true
+        rows.push({
+            id: mon.id,
+            label: mon.label || shortMonitorLabel(live[l]),
+            live: live[l],
+            pending: true
+        })
+    }
+    return rows
+}
+
 function extractWebappUrl(s) {
     var m = String(s || "").match(/https:\/\/[^\s\"']+/g)
     if (!m || !m.length) return ""
