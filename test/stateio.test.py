@@ -82,6 +82,57 @@ def test_parent_symlink_rejected(tmp: Path):
     assert r.returncode != 0
 
 
+def test_bounded_config_read(tmp: Path):
+    good = tmp / "good"
+    huge = tmp / "huge"
+    link = tmp / "link"
+    missing = tmp / "missing"
+    for path in (good, huge, link):
+        path.mkdir()
+    env = os.environ.copy()
+    env["WORKSCAPE_STATE_DIR"] = str(good)
+    assert run(env, ["write-config"], stdin=b'{"version":2,"settings":{},"profiles":[]}').returncode == 0
+    got = run(env, ["read-config"])
+    assert got.returncode == 0, got.stderr
+    assert json.loads(got.stdout.decode())["version"] == 2
+    assert len(got.stdout) <= SAFE.MAX_CONFIG_BYTES
+    stamp = run(env, ["config-stamp"])
+    assert stamp.returncode == 0
+    assert stamp.stdout.startswith(b"ok ")
+
+    env["WORKSCAPE_STATE_DIR"] = str(huge)
+    blob = b"{" + (b"x" * (SAFE.MAX_CONFIG_BYTES + 8))
+    (huge / "config.json").write_bytes(blob)
+    got = run(env, ["read-config"])
+    assert got.returncode != 0
+    assert got.stdout == b""
+    assert b"too large" in got.stderr
+    assert blob not in got.stderr
+    stamp = run(env, ["config-stamp"])
+    assert stamp.returncode == 0
+    assert stamp.stdout == b"too-large\n"
+
+    env["WORKSCAPE_STATE_DIR"] = str(link)
+    secret = link / "secret"
+    secret.write_text("secret-token\n")
+    (link / "config.json").symlink_to(secret)
+    got = run(env, ["read-config"])
+    assert got.returncode != 0
+    assert b"secret-token" not in got.stdout
+    stamp = run(env, ["config-stamp"])
+    assert stamp.returncode == 0
+    assert stamp.stdout == b"rejected\n"
+    assert b"secret-token" not in stamp.stdout
+
+    env["WORKSCAPE_STATE_DIR"] = str(missing)
+    stamp = run(env, ["config-stamp"])
+    assert stamp.returncode == 0
+    assert stamp.stdout == b"missing\n"
+    got = run(env, ["read-config"])
+    assert got.returncode != 0
+    assert got.stdout == b""
+
+
 def test_oversized_config(tmp: Path):
     env = os.environ.copy()
     env["WORKSCAPE_STATE_DIR"] = str(tmp)
@@ -241,7 +292,7 @@ if __name__ == "__main__":
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         base = Path(d)
-        for name in list("abcdefghijklmn"):
+        for name in list("abcdefghijklmno"):
             (base / name).mkdir()
         test_helper_env_disables_bytecode()
         test_write_read_roundtrip(base / "a")
@@ -249,6 +300,7 @@ if __name__ == "__main__":
         test_fifo_config_rejected(base / "c")
         test_parent_symlink_rejected(base / "d")
         test_oversized_config(base / "e")
+        test_bounded_config_read(base / "o")
         test_short_write_leaves_dest(base / "f")
         test_atomic_hyprland_backup(base / "g")
         test_unlink_does_not_follow(base / "h")

@@ -14,9 +14,6 @@ BarWidget {
     implicitHeight: button.implicitHeight
 
     readonly property string pluginId: "io.github.calebhat.workscape"
-    readonly property string home: Quickshell.env("HOME")
-    readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || home + "/.local/state"
-    readonly property string configFile: stateHome + "/omarchy/workscape/config.json"
     readonly property string pluginDir: {
         var u = String(Qt.resolvedUrl("./manifest.json"))
         if (u.indexOf("file://") === 0) u = u.slice(7)
@@ -34,6 +31,7 @@ BarWidget {
     property string lastError: ""
     property bool pendingOpen: false
     property string configText: ""
+    property string configStamp: ""
 
     readonly property var barConfig: {
         var j = Model.parseCappedJson(root.configText)
@@ -74,6 +72,11 @@ BarWidget {
         if (!statusProc.running) statusProc.running = true
     }
 
+    // FileView reads config.json before any size check. Stamp first, then read-config.
+    function pollConfig() {
+        if (!stampProc.running && !configProc.running) stampProc.running = true
+    }
+
     function applyMatching() {
         if (applyProc.running) return
         applyProc.command = ["python3", "-B", root.stateio, "run", "--timeout", "180", "--max-out", "65536", "--", "bash", root.script, "--apply-matching"]
@@ -100,22 +103,44 @@ BarWidget {
         }
     }
 
-    FileView {
-        id: configView
-        path: root.configFile
-        watchChanges: true
-        printErrors: false
-        onLoaded: {
-            try { root.configText = text() } catch (e) { root.configText = "" }
+    Process {
+        id: stampProc
+        command: ["python3", "-B", root.stateio, "config-stamp"]
+        stdout: StdioCollector { id: stampOut; waitForEnd: true }
+        stderr: SplitParser { onRead: function(d) { if (d.length > 4096) return } }
+        onExited: function(code) {
+            var stamp = (stampOut.text || "").trim()
+            if (code !== 0 || stamp.indexOf("ok ") !== 0) {
+                root.configText = ""
+                root.configStamp = ""
+                return
+            }
+            if (stamp === root.configStamp) return
+            if (!configProc.running) configProc.running = true
         }
-        onLoadFailed: root.configText = ""
-        onFileChanged: reload()
+    }
+    Process {
+        id: configProc
+        command: ["python3", "-B", root.stateio, "read-config"]
+        stdout: StdioCollector { id: configOut; waitForEnd: true }
+        stderr: SplitParser { onRead: function(d) { if (d.length > 4096) return } }
+        onExited: function(code) {
+            var stamp = (stampOut.text || "").trim()
+            var txt = configOut.text || ""
+            if (code !== 0 || txt.length > Model.maxConfigBytes() || !Model.parseCappedJson(txt)) {
+                root.configText = ""
+                root.configStamp = stamp.indexOf("ok ") === 0 ? stamp : ""
+                return
+            }
+            if (txt !== root.configText) root.configText = txt
+            root.configStamp = stamp
+        }
     }
     Timer {
         interval: 1500
-        running: root.configText === ""
+        running: true
         repeat: true
-        onTriggered: configView.reload()
+        onTriggered: root.pollConfig()
     }
 
     Process {
@@ -187,5 +212,8 @@ BarWidget {
         }
     }
 
-    Component.onCompleted: refreshCounts()
+    Component.onCompleted: {
+        refreshCounts()
+        pollConfig()
+    }
 }

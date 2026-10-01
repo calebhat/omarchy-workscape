@@ -156,6 +156,52 @@ def unlink_state(name: str) -> None:
         os.close(dirfd)
 
 
+def read_config() -> None:
+    dirfd = SAFE.open_state_dir(create=False)
+    try:
+        data = SAFE.read_at(dirfd, "config.json", SAFE.MAX_CONFIG_BYTES)
+    finally:
+        os.close(dirfd)
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except Exception:
+        print("invalid json", file=sys.stderr)
+        raise SystemExit(1)
+    if not isinstance(obj, dict):
+        print("invalid json", file=sys.stderr)
+        raise SystemExit(1)
+    sys.stdout.buffer.write(data)
+
+
+def config_stamp() -> str:
+    try:
+        dirfd = SAFE.open_state_dir(create=False)
+    except OSError:
+        return "missing"
+    try:
+        try:
+            fd = os.open(
+                "config.json",
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                dir_fd=dirfd,
+            )
+        except FileNotFoundError:
+            return "missing"
+        except OSError:
+            return "rejected"
+        try:
+            st = SAFE._fstat_reg(fd)
+        except OSError:
+            return "rejected"
+        finally:
+            os.close(fd)
+        if st.st_size > SAFE.MAX_CONFIG_BYTES:
+            return "too-large"
+        return f"ok {st.st_size} {st.st_mtime_ns}"
+    finally:
+        os.close(dirfd)
+
+
 def helper_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -314,6 +360,12 @@ def main(argv: list[str]) -> int:
     cmd = argv[0]
     if cmd == "ensure-config":
         sys.stdout.buffer.write(ensure_config())
+        return 0
+    if cmd == "read-config":
+        read_config()
+        return 0
+    if cmd == "config-stamp":
+        sys.stdout.write(config_stamp() + "\n")
         return 0
     if cmd == "write-config":
         write_config_stdin()
