@@ -1,0 +1,490 @@
+#!/usr/bin/env python3
+"""Launch strings that cannot carry a sandboxed client's shell syntax.
+
+Hyprland runs `dispatch exec` through the host shell. A Wayland client chooses
+its app id, and it can rewrite argv[0]. Neither value may be stored or passed
+through as a command. Sandboxed windows are restored with `flatpak run` or
+`snap run` of the id the supervisor recorded, which keeps them in a sandbox.
+"""
+from __future__ import annotations
+
+import os
+import re
+import shlex
+import stat
+import sys
+from pathlib import Path
+
+_APP_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+")
+_SNAP = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
+_CLASS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,128}")
+_URL = re.compile(r"https://[A-Za-z0-9][A-Za-z0-9._~:/?#@&=+%,\-]*")
+_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+_FLAG = re.compile(r"--(?:[A-Za-z0-9][A-Za-z0-9._+-]*)?(?:=[A-Za-z0-9._+:/=@%,~? -]+)?")
+_DASH = re.compile(r"-[A-Za-z0-9][A-Za-z0-9-]*")
+_ABS_PART = re.compile(r"[A-Za-z0-9 ._+-]+")
+
+_INTERPRETERS = frozenset({
+    "sh", "bash", "zsh", "dash", "fish", "env", "sudo", "pkexec",
+    "bwrap", "bubblewrap", "busybox", "python", "python2", "python3",
+    "perl", "ruby", "node", "nodejs", "nu",
+})
+
+
+def _interpreter(base: str) -> bool:
+    name = os.path.basename(str(base or ""))
+    if name in _INTERPRETERS:
+        return True
+    root = name.split(".")[0]
+    return root in _INTERPRETERS
+_BLOCKED_PARTS = frozenset({"tmp", "proc", "dev", "shm", "flatpak", "snap", "app"})
+# Shell syntax. "&" and "?" are left out so https query strings can be one argv.
+_SHELL = set("$`;|<>(){}!\\\n\r\t")
+_MAX_DESKTOPS = 400
+_MAX_DESKTOP_BYTES = 65536
+
+_desktop_cache: dict[str, str] = {}
+
+
+class UnsafeLaunch(ValueError):
+    pass
+
+
+def _app_id(raw: str) -> str | None:
+    s = str(raw or "").strip()
+    if _APP_ID.fullmatch(s):
+        return s
+    return None
+
+
+def _read_proc(pid: int, name: str, limit: int = 8192) -> str:
+    try:
+        fd = os.open(f"/proc/{int(pid)}/{name}", os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return ""
+    try:
+        return os.read(fd, limit).decode("utf-8", "replace")
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+
+
+def flatpak_id(pid: int) -> str | None:
+    """App id recorded by systemd or flatpak, not the client's app id."""
+    if pid < 2:
+        return None
+    cg = _read_proc(pid, "cgroup")
+    m = re.search(r"app-flatpak-(.+)-(\d+)\.scope", cg)
+    if m:
+        return _app_id(m.group(1))
+    text = _read_proc_root_file(pid, ".flatpak-info")
+    if not text:
+        return None
+    section = ""
+    for line in text.splitlines():
+        if line.startswith("["):
+            section = line.strip()
+            continue
+        if section == "[Application]" and line.startswith("name="):
+            return _app_id(line[5:])
+    return None
+
+
+def snap_id(pid: int) -> str | None:
+    if pid < 2:
+        return None
+    cg = _read_proc(pid, "cgroup")
+    m = re.search(r"(?:^|/)snap\.([a-z0-9][a-z0-9-]{1,40})\.", cg)
+    if not m:
+        return None
+    name = m.group(1)
+    if _SNAP.fullmatch(name):
+        return name
+    return None
+
+
+def _read_proc_root_file(pid: int, name: str) -> str:
+    if name != ".flatpak-info":
+        return ""
+    try:
+        fd = os.open(
+            f"/proc/{int(pid)}/root/.flatpak-info",
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except OSError:
+        return ""
+    try:
+        return os.read(fd, 8192).decode("utf-8", "replace")
+    except OSError:
+        return ""
+    finally:
+        os.close(fd)
+
+
+def is_sandboxed(pid: int) -> bool:
+    if pid < 2:
+        return False
+    if flatpak_id(pid) or snap_id(pid):
+        return True
+    return os.path.exists(f"/proc/{int(pid)}/root/.flatpak-info")
+
+
+def _safe_abs(path: str) -> bool:
+    if not path.startswith("/") or len(path) > 400:
+        return False
+    parts = path.split("/")
+    if any(p in {"", ".", ".."} for p in parts[1:]):
+        return False
+    if any(p in _BLOCKED_PARTS for p in parts):
+        return False
+    return all(_ABS_PART.fullmatch(p) for p in parts[1:])
+
+
+def _regular_exec(path: str) -> bool:
+    real = os.path.realpath(path)
+    if not _safe_abs(real):
+        return False
+    try:
+        st = os.stat(real)
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    if st.st_mode & 0o022:
+        return False
+    if st.st_uid not in {0, os.getuid()}:
+        return False
+    return os.access(real, os.X_OK)
+
+
+def host_exe(pid: int) -> str | None:
+    """Kernel executable path. Ignores argv[0]. Empty for sandboxed pids."""
+    if pid < 2 or is_sandboxed(pid):
+        return None
+    try:
+        raw = os.readlink(f"/proc/{int(pid)}/exe")
+    except OSError:
+        return None
+    if raw.endswith(" (deleted)"):
+        return None
+    path = os.path.realpath(raw)
+    if _interpreter(path) or not _safe_abs(path) or not _regular_exec(path):
+        return None
+    return path
+
+
+def _user_bin(name: str) -> str:
+    if not _TOKEN.fullmatch(name):
+        return ""
+    path = str(Path.home() / ".local" / "bin" / name)
+    real = os.path.realpath(path)
+    if not _safe_abs(real) or not _regular_exec(real):
+        return ""
+    if _interpreter(real):
+        return ""
+    return real
+
+
+def _pid_of(client: dict) -> int:
+    try:
+        pid = int(client.get("pid") or 0)
+    except (TypeError, ValueError):
+        return 0
+    if pid < 2:
+        return 0
+    return pid
+
+
+def _trusted_proc(pid: int, exe_base: str, bases: set[str]) -> bool:
+    if pid < 2:
+        return True
+    return exe_base in bases
+
+
+def fixed_launcher(client: dict, exe_base: str, pid: int, sand: bool) -> str:
+    """Constant commands. Client strings only select; they are never inserted."""
+    if sand:
+        return ""
+    cls = str(client.get("class") or "")
+    title = str(client.get("title") or "")
+    hay = f"{cls} {title}".lower()
+    if ("herdr" in hay or cls.startswith("org.omarchy.herdr")) and _trusted_proc(
+        pid, exe_base, {"foot", "footclient", "herdr", "herdr-shophawk"}
+    ):
+        if "shophawk" in hay or "omarchyhome" in hay:
+            return _user_bin("herdr-shophawk") or "herdr-shophawk"
+        return "omarchy-launch-or-focus-tui --app-id=org.omarchy.herdr herdr"
+    if (
+        cls in {"org.quickshell", "quickshell"}
+        and "shophawk" in hay
+        and "herdr" not in hay
+        and _trusted_proc(pid, exe_base, {"qs", "quickshell", "shophawk-panel"})
+    ):
+        return _user_bin("shophawk-panel") or "shophawk-panel"
+    footish = exe_base in {"foot", "footclient"} or cls == "foot" or cls.startswith("foot")
+    if footish and _trusted_proc(pid, exe_base, {"foot", "footclient"}):
+        if (
+            exe_base in {"foot", "footclient"}
+            and _CLASS.fullmatch(cls)
+            and cls not in {"foot", "footclient"}
+        ):
+            return f"foot --app-id={cls}"
+        return "foot"
+    if (exe_base == "ghostty" or cls in {"ghostty", "com.mitchellh.ghostty"}) and _trusted_proc(
+        pid, exe_base, {"ghostty"}
+    ):
+        return "ghostty"
+    return ""
+
+
+def _read_desktop(path: Path) -> tuple[os.stat_result, str] | None:
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_DESKTOP_BYTES:
+            return None
+        if st.st_mode & 0o022:
+            return None
+        if st.st_uid not in {0, os.getuid()}:
+            return None
+        return st, os.read(fd, _MAX_DESKTOP_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _field(text: str, key: str) -> str:
+    section = ""
+    prefix = key + "="
+    for line in text.splitlines():
+        if line.startswith("["):
+            section = line.strip()
+            continue
+        if section in {"", "[Desktop Entry]"} and line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def _exec_argv(exec_line: str) -> list[str] | None:
+    cleaned = re.sub(r"%[fFuUdDnNickvm%]", " ", exec_line or "")
+    if any(c in cleaned for c in _SHELL):
+        return None
+    try:
+        argv = shlex.split(cleaned)
+    except ValueError:
+        return None
+    out = []
+    for arg in argv:
+        if arg.startswith("--") and arg.endswith("="):
+            continue
+        if arg in {"@@", "@@u", "@@"}:
+            continue
+        out.append(arg)
+    if not out or len(out) > 8:
+        return None
+    base = os.path.basename(out[0])
+    if base == "flatpak" or out[0] in {"/usr/bin/flatpak", "/usr/bin/flatpak-spawn"}:
+        ids = [a for a in out if _app_id(a)]
+        if "run" not in out or len(ids) != 1:
+            return None
+        return ["flatpak", "run", ids[0]]
+    if _interpreter(base) or base == "flatpak-spawn":
+        return None
+    return out
+
+
+def _command_from_desktop(path: Path) -> str:
+    got = _read_desktop(path)
+    if not got:
+        return ""
+    _st, text = got
+    argv = _exec_argv(_field(text, "Exec"))
+    if not argv:
+        return ""
+    try:
+        return prepare_shell(shlex.join(argv))
+    except UnsafeLaunch:
+        return ""
+
+
+def _desktop_dirs() -> list[Path]:
+    home = Path.home()
+    return [
+        Path("/usr/share/applications"),
+        Path("/usr/local/share/applications"),
+        Path("/var/lib/flatpak/exports/share/applications"),
+        home / ".local/share/flatpak/exports/share/applications",
+        home / ".local/share/applications",
+    ]
+
+
+def desktop_command(cls: str) -> str:
+    """Launcher taken from a desktop file, never from the window's own strings."""
+    if not _CLASS.fullmatch(cls or ""):
+        return ""
+    cached = _desktop_cache.get(cls)
+    if cached is not None:
+        return cached
+    found = ""
+    direct: list[Path] = []
+    scan: list[Path] = []
+    for folder in _desktop_dirs():
+        if not folder.is_dir():
+            continue
+        candidate = folder / f"{cls}.desktop"
+        if candidate.is_file():
+            direct.append(candidate)
+        else:
+            scan.append(folder)
+    for path in direct:
+        found = _command_from_desktop(path)
+        if found:
+            break
+    if not found:
+        seen = 0
+        for folder in scan:
+            try:
+                names = list(folder.iterdir())
+            except OSError:
+                continue
+            for path in names:
+                seen += 1
+                if seen > _MAX_DESKTOPS:
+                    break
+                if path.suffix != ".desktop":
+                    continue
+                got = _read_desktop(path)
+                if not got:
+                    continue
+                _st, text = got
+                wm = _field(text, "StartupWMClass")
+                if wm != cls:
+                    continue
+                found = _command_from_desktop(path)
+                if found:
+                    break
+            if found or seen > _MAX_DESKTOPS:
+                break
+    _desktop_cache[cls] = found
+    return found
+
+
+def _exe_base(pid: int) -> str:
+    path = host_exe(pid) or ""
+    return os.path.basename(path)
+
+
+def captured_exec(client: dict, url: str, class_url: str) -> str:
+    """Command to store for a live window. Blank means the user must pick one."""
+    pid = _pid_of(client)
+    sand = is_sandboxed(pid) if pid else False
+    if sand:
+        fp = flatpak_id(pid)
+        if fp:
+            return accept(f"flatpak run {fp}")
+        sn = snap_id(pid)
+        if sn:
+            return accept(f"snap run {sn}")
+        if class_url and _URL.fullmatch(class_url):
+            return accept(f"omarchy-launch-webapp {class_url}")
+        return ""
+    exe = host_exe(pid) if pid else ""
+    base = os.path.basename(exe) if exe else ""
+    cls = str(client.get("class") or "")
+    fixed = fixed_launcher(client, base, pid, sand)
+    if fixed:
+        return accept(fixed)
+    if url and _URL.fullmatch(url):
+        return accept(f"omarchy-launch-webapp {url}")
+    if (base in {"brave", "brave-browser"} or cls in {"brave", "brave-browser"}) and _trusted_proc(
+        pid, base, {"brave", "brave-browser"}
+    ):
+        return accept("brave")
+    if exe:
+        return accept(exe)
+    return accept(desktop_command(cls))
+
+
+def accept(cmd: str) -> str:
+    if not cmd:
+        return ""
+    try:
+        return prepare_shell(cmd)
+    except UnsafeLaunch:
+        return ""
+
+
+def _token_ok(tok: str) -> bool:
+    if not tok or len(tok) > 300 or any(c in tok for c in _SHELL):
+        return False
+    if tok == "--":
+        return True
+    if tok.startswith("/"):
+        return _safe_abs(tok)
+    if tok.startswith("--"):
+        return _FLAG.fullmatch(tok) is not None and ".." not in tok
+    if tok.startswith("-"):
+        return _DASH.fullmatch(tok) is not None
+    if tok.startswith("https://"):
+        return _URL.fullmatch(tok) is not None
+    return _TOKEN.fullmatch(tok) is not None
+
+
+def _argv_policy(argv: list[str]) -> None:
+    if not argv or len(argv) > 12:
+        raise UnsafeLaunch("argv length")
+    base = os.path.basename(argv[0])
+    if _interpreter(argv[0]):
+        raise UnsafeLaunch("interpreter")
+    if base == "flatpak":
+        if argv != ["flatpak", "run", argv[-1]] or not _app_id(argv[-1]):
+            raise UnsafeLaunch("flatpak argv")
+        return
+    if base == "snap":
+        if len(argv) != 3 or argv[1] != "run" or not _SNAP.fullmatch(argv[2]):
+            raise UnsafeLaunch("snap argv")
+        return
+    if base == "omarchy-launch-webapp":
+        if len(argv) != 2 or not _URL.fullmatch(argv[1]):
+            raise UnsafeLaunch("webapp argv")
+        return
+    for tok in argv:
+        if not _token_ok(tok):
+            raise UnsafeLaunch("token")
+    if argv[0].startswith("/") and (not _safe_abs(argv[0]) or not _regular_exec(argv[0])):
+        raise UnsafeLaunch("executable")
+
+
+def prepare_shell(cmd: str) -> str:
+    """Quote a command so the host shell cannot interpret metacharacters."""
+    raw = str(cmd or "").strip()
+    if not raw or len(raw) > 500 or any(c in raw for c in "\n\r\x00"):
+        raise UnsafeLaunch("metacharacter")
+    try:
+        argv = shlex.split(raw)
+    except ValueError as exc:
+        raise UnsafeLaunch("parse") from exc
+    _argv_policy(argv)
+    return shlex.join(argv)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) >= 3 and argv[1] == "shell" and "--" in argv:
+        cmd = argv[argv.index("--") + 1]
+        try:
+            sys.stdout.write(prepare_shell(cmd))
+        except UnsafeLaunch as exc:
+            print(f"unsafe launch: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    print("usage: launchsafe shell -- <command>", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

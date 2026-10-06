@@ -12,6 +12,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 GEOM = SourceFileLoader("workscape_geom_capture", str(Path(__file__).resolve().parent / "geom")).load_module()
+LAUNCH = SourceFileLoader("workscape_launchsafe", str(Path(__file__).resolve().parent / "launchsafe")).load_module()
 
 
 def hypr_j(cmd: str):
@@ -94,9 +95,7 @@ def shell_cwd(pid: int) -> str:
     return safe_cwd(best) if best not in {"/", ""} else ""
 
 
-def url_from_client(c: dict) -> str:
-    cls = str(c.get("class") or "")
-    title = str(c.get("title") or "")
+def class_url(cls: str) -> str:
     # Chromium/Brave build an app window's class as
     # "<browser>-<host>__<path>-<profile-dir>", where the profile directory is
     # "Default" for the default profile and "Profile_N" otherwise. Stripping only
@@ -118,6 +117,15 @@ def url_from_client(c: dict) -> str:
             if path:
                 url += "/" + path.lstrip("/")
             return safe_url(url.rstrip("/"))
+    return ""
+
+
+def url_from_client(c: dict) -> str:
+    cls = str(c.get("class") or "")
+    title = str(c.get("title") or "")
+    got = class_url(cls)
+    if got:
+        return got
     cmd = proc_cmd(int(c.get("pid") or 0)) if c.get("pid") else ""
     um = re.search(r"https://[^\s\"']+", cmd)
     if um and "deeplink" not in um.group(0):
@@ -127,41 +135,11 @@ def url_from_client(c: dict) -> str:
     return ""
 
 
-def _home_bin(name: str) -> str:
-    p = Path.home() / ".local" / "bin" / name
-    if p.is_file():
-        return str(p)
-    return name
-
-
 def exec_for_client(c: dict, url: str, cwd: str) -> str:
-    cls = str(c.get("class") or "")
-    title = str(c.get("title") or "")
-    hay = f"{cls} {title}".lower()
-    cmd = proc_cmd(int(c.get("pid") or 0)) if c.get("pid") else ""
-    # Herdr runs inside foot with --app-id. The parent cmdline is `foot`, which
-    # must not become the launch command or Fresh opens a blank terminal.
-    if "herdr" in hay or cls.startswith("org.omarchy.herdr"):
-        if "shophawk" in hay or "omarchyhome" in hay:
-            return _home_bin("herdr-shophawk")
-        return "omarchy-launch-or-focus-tui --app-id=org.omarchy.herdr herdr"
-    if cls in {"org.quickshell", "quickshell"} and "shophawk" in hay and "herdr" not in hay:
-        return _home_bin("shophawk-panel")
-    if cls.startswith("foot") or cls == "foot":
-        return "foot"
-    if "ghostty" in cls:
-        return "ghostty"
-    if url:
-        return f"omarchy-launch-webapp '{url}'"
-    if cls == "brave-browser" or cls == "brave":
-        return "brave"
-    first = cmd.split()[0] if cmd else ""
-    if first.startswith("/") and os.path.isfile(first):
-        base = os.path.basename(first)
-        if base in {"foot", "foot-client", "ghostty"} and cls not in {"foot", "com.mitchellh.ghostty"}:
-            return cls or first
-        return first
-    return first or cls
+    # argv[0] and the Wayland app id are client-controlled. launchsafe stores a
+    # fixed launcher, a kernel executable, a desktop-file launcher, or nothing.
+    del cwd
+    return LAUNCH.captured_exec(c, url, class_url(str(c.get("class") or "")))
 
 
 def geom_from_client(c: dict, mon: dict, grow_top: int = 0) -> dict | None:

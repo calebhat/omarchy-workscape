@@ -493,13 +493,11 @@ cmd_launch() {
     fi
   fi
   if [[ -n $cwd && $final_cmd != *"--app-id="* ]]; then
-    local qcwd
-    printf -v qcwd '%q' "$cwd"
     if [[ $final_cmd == foot || $final_cmd == foot\ * ]]; then
-      final_cmd="foot --working-directory=$qcwd${final_cmd#foot}"
+      final_cmd="foot --working-directory='$cwd'${final_cmd#foot}"
     elif [[ $final_cmd == ghostty || $final_cmd == ghostty\ * ]]; then
       if [[ $final_cmd != *working-directory* ]]; then
-        final_cmd="ghostty --working-directory=$qcwd${final_cmd#ghostty}"
+        final_cmd="ghostty --working-directory='$cwd'${final_cmd#ghostty}"
       fi
     fi
   fi
@@ -528,15 +526,20 @@ cmd_launch() {
       fi
       ;;
     *)
-      if [[ $final_cmd != uwsm-app* && $final_cmd != omarchy-launch* && $final_cmd != *chromium* && $final_cmd != *google-chrome* && $final_cmd != *brave* && $final_cmd != *firefox* ]]; then
+      if [[ $final_cmd != uwsm-app* && $final_cmd != omarchy-launch* && $final_cmd != flatpak\ * && $final_cmd != snap\ * && $final_cmd != *chromium* && $final_cmd != *google-chrome* && $final_cmd != *brave* && $final_cmd != *firefox* ]]; then
         if [[ $exec_cmd =~ ^[a-zA-Z0-9._-]+$ || $exec_cmd =~ ^[a-zA-Z0-9._-]+[[:space:]] ]]; then
           final_cmd="uwsm-app -- $final_cmd"
         fi
       fi
       ;;
   esac
-  local dispatch_cmd="$final_cmd"
-  local lua_escaped
+  # Hyprland runs this string in the host shell. Quote a checked argv and
+  # refuse client-controlled shell syntax (see scripts/launchsafe).
+  local dispatch_cmd lua_escaped
+  if ! dispatch_cmd=$(python3 -B "$PLUGIN_DIR/scripts/launchsafe" shell -- "$final_cmd"); then
+    echo "refusing unsafe launch command on workspace $workspace" >&2
+    return 1
+  fi
   lua_escaped=$(printf '%s' "$dispatch_cmd" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
   local is_browser_like="false"
   local is_tui_like="false"
