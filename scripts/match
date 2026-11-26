@@ -19,6 +19,8 @@ from typing import Any
 
 NET = SourceFileLoader("workscape_network", str(Path(__file__).resolve().parent / "network")).load_module()
 SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
+BLOCKS = SourceFileLoader("workscape_blocks", str(Path(__file__).resolve().parent / "blocks")).load_module()
+MODES = SourceFileLoader("workscape_modes", str(Path(__file__).resolve().parent / "modes")).load_module()
 
 _CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
@@ -545,7 +547,7 @@ def omarchy_default_workspace_lua(ws: str) -> str:
 def native_layout_name(requested: str) -> str:
     if requested in ("stage", "set-width"):
         return "scrolling"
-    if requested in ("dwindle", "scrolling", "master"):
+    if requested in ("dwindle", "scrolling", "master", "floating"):
         return requested
     return "dwindle"
 
@@ -583,6 +585,7 @@ def reset_empty_workspaces(cfg: dict[str, Any], profile: dict[str, Any]) -> dict
     """
     assigned = assigned_workspaces(profile)
     overflow = overflow_active_workspaces(profile)
+    protected = {BLOCKS.id_for_profile_slot(cfg, profile, ws) for ws in (assigned | overflow)}
     prefs = profile.get("workspacePrefs")
     if not isinstance(prefs, dict):
         prefs = {}
@@ -592,17 +595,23 @@ def reset_empty_workspaces(cfg: dict[str, Any], profile: dict[str, Any]) -> dict
     occupied = {s for s in os.environ.get("WORKSCAPE_OCCUPIED_WS", "").split() if s}
     for n in range(1, 21):
         ws = str(n)
+        # A block id owned by a pin (workspace 11 is slot 1 on the next monitor)
+        # is not itself a slot to reset. The slot is handled under its own key.
+        if ws in protected and ws not in assigned and ws not in overflow:
+            continue
         if ws in assigned:
             continue
         if ws in overflow:
+            hid = BLOCKS.id_for_profile_slot(cfg, profile, ws)
             vis = int((profile.get("overflow") or {}).get("maxWindows") or 2)
             vis = max(1, min(20, vis))
             col = round(1.0 / vis, 4)
             lua = (
-                f'hl.workspace_rule({{ workspace = "{SAFE.lua_str(ws)}", persistent = false, '
+                f'hl.workspace_rule({{ workspace = "{SAFE.lua_str(hid)}", persistent = false, '
                 f'layout = "scrolling", layout_opts = {{ column_width = {col} }} }})'
             )
             _hypr_eval(lua)
+            MODES.sync_workspace_mode(hid, "scrolling")
             prefs[ws] = {"layout": "scrolling", "visibleCount": vis, "lockSizes": False, "extras": "block"}
             kept_overflow.append(ws)
             continue
@@ -611,6 +620,7 @@ def reset_empty_workspaces(cfg: dict[str, Any], profile: dict[str, Any]) -> dict
         prefs.pop(ws, None)
         prefs.pop(n, None)
         _hypr_eval(omarchy_default_workspace_lua(ws))
+        MODES.sync_workspace_mode(ws, "dwindle")
         cleared.append(ws)
     return {"ok": True, "cleared": cleared, "overflowKept": kept_overflow, "assigned": sorted(assigned, key=int)}
 
@@ -625,7 +635,8 @@ def workspace_pref_luas(ws: str, layout: str, vis: int, persist: bool = False, m
     parts = [f'workspace = "{ws}"', f"persistent = {'true' if persist else 'false'}"]
     if mon:
         parts.append(f'monitor = "{SAFE.lua_str(mon)}"')
-    parts.append(f'layout = "{layout}"')
+    hypr_layout = "dwindle" if layout == "floating" else layout
+    parts.append(f'layout = "{hypr_layout}"')
     cmds: list[str] = []
     if layout == "scrolling":
         col = round(1.0 / vis, 4)
@@ -652,8 +663,11 @@ def workspace_pref_luas(ws: str, layout: str, vis: int, persist: bool = False, m
 
 
 def stamp_workspace_pref(ws: str, layout: str, vis: int, persist: bool = False, mon: str = "") -> None:
-    for lua in workspace_pref_luas(ws, layout, vis, persist, mon):
+    # Profile keys stay slots. Hyprland hears the monitor's Omarchy 4.5 id.
+    hid = BLOCKS.id_for_connector(ws, mon) if mon else ws
+    for lua in workspace_pref_luas(hid, layout, vis, persist, mon):
         _hypr_eval(lua)
+    MODES.sync_workspace_mode(hid, native_layout_name(layout))
 
 
 def apply_one_ws_pref(profile: dict[str, Any], src_ws: str, dest_ws: str) -> dict[str, Any]:
@@ -705,7 +719,10 @@ def apply_ws_prefs(cfg: dict[str, Any], profile: dict[str, Any], live_list: list
         mon = pins.get(ws) or ""
         mon = safe_connector(mon) or ""
         persist = profile.get("persistentWorkspaces") is True
-        stamp_workspace_pref(ws, layout, vis, persist, mon)
+        if mon:
+            stamp_workspace_pref(ws, layout, vis, persist, mon)
+        else:
+            stamp_workspace_pref(BLOCKS.id_for_profile_slot(cfg, profile, ws), layout, vis, persist, "")
         applied.append({"workspace": ws, "layout": layout, "monitor": mon, "visibleCount": vis, "lockSizes": lock, "extras": extras})
     return {"ok": True, "workspaces": applied}
 

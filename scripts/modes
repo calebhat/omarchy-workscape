@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Keep WorkScape layouts on Omarchy 4.5's Super+L mode files.
+
+Omarchy stores dwindle, scrolling, and floating per workspace in
+~/.local/state/omarchy/workspace-layouts/<id>.lua and reloads them at login.
+A workspace_rule alone is undone by that file. This writes the same file
+Super+L writes, for dwindle and scrolling only. Master is a Hyprland layout
+Omarchy's cycle does not know, so it is left as a workspace rule.
+
+File writes follow the checks in ubruckhaus.simple-tile: a real directory
+owned by this user, no symlink follow, atomic replace. Nothing is written
+unless WORKSCAPE_SYNC_MODES=1, so unit tests do not touch the live state dir.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import stat
+import subprocess
+import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+SAFE = SourceFileLoader(
+    "workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")
+).load_module()
+
+_MODES = ("dwindle", "scrolling", "floating")
+_QUOTE = re.compile(r'\b%s\s*=\s*"([a-z]+)"')
+
+
+def modes_dir() -> Path:
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    return Path(state) / "omarchy" / "workspace-layouts"
+
+
+def _read_quoted(path: Path, key: str) -> str | None:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            return None
+        text = os.read(fd, 4096).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+    match = re.search(_QUOTE.pattern % re.escape(key), text)
+    return match.group(1) if match else None
+
+
+def default_mode() -> str:
+    mode = _read_quoted(modes_dir() / "default.lua", "default")
+    if mode in _MODES:
+        return mode
+    try:
+        proc = subprocess.run(
+            ["hyprctl", "getoption", "general.layout", "-j"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            stdin=subprocess.DEVNULL,
+        )
+        mode = str(json.loads(proc.stdout or "{}").get("str") or "")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        mode = ""
+    return mode if mode in _MODES else "dwindle"
+
+
+def current_workspace_mode(ws) -> str:
+    hid = SAFE.safe_ws(ws)
+    if hid:
+        mode = _read_quoted(modes_dir() / f"{hid}.lua", "mode")
+        if mode in _MODES:
+            return mode
+    return default_mode()
+
+
+def sync_workspace_mode(ws, layout: str) -> None:
+    if os.environ.get("WORKSCAPE_SYNC_MODES") != "1":
+        return
+    hid = SAFE.safe_ws(ws)
+    mode = str(layout or "")
+    if not hid or mode not in ("dwindle", "scrolling", "floating"):
+        return
+    SAFE.bounded_run(
+        [
+            "hyprctl",
+            "eval",
+            f'o.workspace_mode({{ workspace = "{hid}", mode = "{mode}" }})',
+        ],
+        timeout=3,
+    )
+    directory = modes_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        info = directory.lstat()
+    except OSError:
+        return
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        return
+    path = directory / f"{hid}.lua"
+    if mode == default_mode():
+        try:
+            if path.is_symlink() or path.exists():
+                path.unlink()
+        except OSError:
+            return
+        SAFE.bounded_run(["omarchy-shell", "omarchy.dock", "refresh"], timeout=2)
+        return
+    fd, temp = tempfile.mkstemp(dir=directory, prefix=f".{hid}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(f'o.workspace_mode({{ workspace = "{hid}", mode = "{mode}" }})\n')
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
+    SAFE.bounded_run(["omarchy-shell", "omarchy.dock", "refresh"], timeout=2)

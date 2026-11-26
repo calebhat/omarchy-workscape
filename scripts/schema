@@ -412,7 +412,7 @@ def normalize_workspace_pref(p: Any) -> dict[str, Any]:
     layout = p.get("layout")
     if layout in {"stage", "set-width"}:
         layout = "scrolling"
-    if layout not in {"scrolling", "master"}:
+    if layout not in {"scrolling", "master", "floating"}:
         layout = "dwindle"
     return {
         "layout": layout,

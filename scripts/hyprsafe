@@ -16,7 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-_WS_RE = re.compile(r"^(?:[1-9]|1[0-9]|20)$")
+# 1-200: ten slots on each of twenty monitors (Omarchy 4.5 block ids).
+_WS_RE = re.compile(r"^[1-9][0-9]{0,2}$")
 _ADDR_RE = re.compile(r"^(?:0x)?[0-9a-fA-F]+$")
 _CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 
@@ -43,9 +44,12 @@ STATE_NAMES = frozenset({
 
 def safe_ws(ws) -> str | None:
     s = str(ws or "").strip()
-    if _WS_RE.fullmatch(s):
-        return s
-    return None
+    if not _WS_RE.fullmatch(s):
+        return None
+    n = int(s)
+    if n < 1 or n > 200:
+        return None
+    return s
 
 
 def safe_addr(addr) -> str | None:

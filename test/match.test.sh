@@ -140,7 +140,8 @@ assert m.safe_connector("eDP-1; rm -rf /") is None
 s = m.SAFE
 assert s.safe_ws("3") == "3"
 assert s.safe_ws("20") == "20"
-assert s.safe_ws("21") is None
+assert s.safe_ws("21") == "21"
+assert s.safe_ws("201") is None
 assert s.safe_ws('1"}); os.execute("id")') is None
 assert s.safe_addr("0xabc") == "0xabc"
 assert s.safe_addr("5602fd5c9090") == "0x5602fd5c9090"

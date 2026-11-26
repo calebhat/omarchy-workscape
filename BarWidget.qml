@@ -38,8 +38,9 @@ BarWidget {
         return j ? Model.sanitizeConfig(j) : Model.defaultConfig()
     }
     readonly property int focusedWorkspaceId: Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id : 1
+    readonly property int focusedSlot: root.focusedWorkspaceId < 1 ? 1 : ((root.focusedWorkspaceId - 1) % 10) + 1
     readonly property var focusedProfile: Model.profileById(barConfig, barConfig.settings && barConfig.settings.activeProfileId) || Model.defaultProfile()
-    readonly property var chipGeoms: Model.chipGeomsForWorkspace(focusedProfile, focusedWorkspaceId)
+    readonly property var chipGeoms: Model.chipGeomsForWorkspace(focusedProfile, root.focusedSlot)
 
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
     readonly property bool popoutSwitchClosing: panelLoader.item ? panelLoader.item.popoutSwitchClosing === true : false
@@ -192,18 +193,15 @@ BarWidget {
         bar: root.bar
         slotSize: Style.bar.statusSlot
         tooltipText: root.pluginEnabled
-            ? ("WorkScape • WS " + root.focusedWorkspaceId + " • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
+            ? ("WorkScape • WS " + root.focusedSlot + " • " + root.profileCount + " profiles • " + root.enabledCount + " apps • click to manage • middle-click apply matching")
             : "WorkScape • disabled • click to enable"
         iconComponent: Component {
-            Item {
-                LayoutThumb {
-                    anchors.centerIn: parent
-                    width: Math.round(parent.width)
-                    height: Math.round(parent.width * 0.68)
-                    geoms: root.chipGeoms
-                    stroke: button.foreground
-                    strength: root.opened ? 1.0 : 0.7
-                }
+            LayoutThumb {
+                width: 48
+                height: 34
+                geoms: root.chipGeoms
+                stroke: button.foreground
+                strength: root.opened ? 1.0 : 0.7
             }
         }
         onPressed: function(btn){

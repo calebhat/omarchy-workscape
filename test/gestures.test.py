@@ -16,13 +16,13 @@ def test_skip_empty_uses_m():
 def test_include_empty_uses_r():
     lua = g.render_lua({"skipEmpty": False, "keyboard": True})
     assert "workspace_swipe_use_r = true" in lua
-    assert 'workspace = "r-1"' in lua
-    assert 'workspace = "r+1"' in lua
+    assert 'workspace = "m-1"' in lua
+    assert 'workspace = "m+1"' in lua
 
 
 def test_occupied_keyboard():
     lua = g.render_lua({"skipEmpty": True, "keyboard": True})
-    assert 'workspace = "e-1"' in lua
+    assert 'workspace = "m-1"' in lua
     assert "SUPER + comma" in lua
 
 
@@ -132,7 +132,7 @@ def test_keyboard_binds_reach_hyprland_without_persist(tmp_path):
         joined = "\n".join(seen)
         assert 'o.bind("SUPER + comma"' in joined, "previous-workspace bind never reached Hyprland"
         assert 'o.bind("SUPER + period"' in joined, "next-workspace bind never reached Hyprland"
-        assert 'workspace = "e-1"' in joined and 'workspace = "e+1"' in joined
+        assert 'workspace = "m-1"' in joined and 'workspace = "m+1"' in joined
         assert 'hl.unbind("SUPER + comma")' in joined, "the old binding is not released"
         # Turning it back off must release the keys rather than leave them bound.
         seen.clear()

@@ -640,6 +640,8 @@ function normalizeWorkspaceNames(raw) {
 function layoutDescription(layout, hasLock) {
     if (hasLock && (layout === "dwindle" || !layout))
         return "Locked split: assigned apps keep their sizes on dwindle. Extra windows open on the next unused workspace — extras cannot stay here."
+    if (layout === "floating")
+        return "Floating windows: apps open freely and Omarchy’s bottom dock stays visible."
     if (layout === "master")
         return "Hyprland master: one large pane with the rest stacked beside it on the same screen. No scrolling."
     if (layout === "scrolling")
@@ -666,7 +668,7 @@ function normalizeWorkspacePref(p) {
     }
     var layout = p.layout
     if (layout === "stage" || layout === "set-width") layout = "scrolling"
-    if (layout !== "scrolling" && layout !== "master") layout = "dwindle"
+    if (layout !== "scrolling" && layout !== "master" && layout !== "floating") layout = "dwindle"
     var vis = clampVisibleCount(p.visibleCount)
     var extras = p.extras === "block" ? "block" : "around"
     return {
@@ -1518,8 +1520,15 @@ function groupTokenOf(a) {
     return String(a.group)
 }
 
+// Omarchy 4.5 stores Hyprland ids in blocks of ten. The profile still keys slots 1-10.
+function profileSlot(workspaceId) {
+    var n = parseInt(workspaceId, 10)
+    if (!n || n < 1) return 1
+    return ((n - 1) % 10) + 1
+}
+
 function chipGeomsForWorkspace(profile, workspace) {
-    var ws = parseInt(workspace, 10)
+    var ws = profileSlot(workspace)
     var list = []
     var apps = (profile && profile.assignments) || []
     for (var i = 0; i < apps.length; i++) {

@@ -16,12 +16,37 @@ PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Omarchy reloads the plugin on any file write under this folder (including
 # Python's __pycache__). Never write bytecode here or Capture closes the panel.
 export PYTHONDONTWRITEBYTECODE=1
+# Persist dwindle/scrolling on Omarchy 4.5's Super+L mode files. Unit tests
+# leave this unset so they do not write ~/.local/state.
+export WORKSCAPE_SYNC_MODES=1
 MATCH="$PLUGIN_DIR/scripts/match"
 GEOM="$PLUGIN_DIR/scripts/geom"
 GESTURES="$PLUGIN_DIR/scripts/gestures"
 HOTKEYS="$PLUGIN_DIR/scripts/hotkeys"
 STATEIO="$PLUGIN_DIR/scripts/stateio"
+BLOCKS="$PLUGIN_DIR/scripts/blocks"
 WORKSCAPE_APPLY_ARGV=("$@")
+
+# Omarchy 4.5: workspace ids run 1-200 (ten slots on each of twenty monitors).
+ws_ok() {
+  [[ ${1:-} =~ ^[1-9][0-9]{0,2}$ ]] || return 1
+  (( $1 >= 1 && $1 <= 200 ))
+}
+
+# Profile slot on a live connector -> that monitor's Hyprland workspace id.
+hypr_ws() {
+  local slot=$1 mon=${2:-}
+  local out=""
+  if [[ -n $mon && -n $slot ]]; then
+    out=$(python3 -B "$BLOCKS" id --slot "$slot" --monitor "$mon" 2>/dev/null || true)
+    out=${out//$'\n'/}
+  fi
+  if ws_ok "$out"; then
+    printf '%s' "$out"
+  else
+    printf '%s' "$slot"
+  fi
+}
 
 default_config() {
   cat <<'JSON'
@@ -173,24 +198,48 @@ profile_must_match() {
 
 move_workspace_to_monitor() {
   local ws=$1 name=$2
-  [[ $ws =~ ^[0-9]+$ ]] || return 0
+  ws_ok "$ws" || return 0
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 0
   [[ $name != *HEADLESS* ]] || return 0
   hyprctl eval "$(printf 'hl.dispatch(hl.dsp.workspace.move({workspace="%s", monitor="%s"}))' "$ws" "$name")" >/dev/null 2>&1 || true
 }
 
+# Windows that still sit on the pre-4.5 literal slot follow the pin's block id.
+# Leave them when the block id already has windows: moving would stack a
+# second copy on top of a layout that is already there.
+migrate_slot_windows() {
+  local slot=$1 hid=$2
+  [[ $slot != "$hid" ]] || return 0
+  ws_ok "$slot" || return 0
+  ws_ok "$hid" || return 0
+  local dest_count
+  dest_count=$(hypr_clients_json | jq -r --arg ws "$hid" '[.[] | select((.workspace.id|tostring)==$ws)] | length' 2>/dev/null || echo 0)
+  if [[ $dest_count =~ ^[0-9]+$ ]] && (( dest_count > 0 )); then
+    echo "leave workspace $slot — $hid already has windows"
+    return 0
+  fi
+  local addr
+  while IFS= read -r addr; do
+    [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || continue
+    hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.move({workspace="%s", window="address:%s", follow=false}))' "$hid" "$addr")" >/dev/null 2>&1 || true
+    echo "moved $addr from workspace $slot to $hid"
+  done < <(hypr_clients_json | jq -r --arg ws "$slot" '.[] | select((.workspace.id|tostring)==$ws) | .address // empty' 2>/dev/null)
+}
+
 bind_workspace_to_monitor() {
-  local ws=$1 name=$2
-  [[ $ws =~ ^[0-9]+$ ]] || return 0
+  local slot=$1 name=$2
+  ws_ok "$slot" || return 0
   [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 0
   [[ $name != *HEADLESS* ]] || return 0
+  local ws
+  ws=$(hypr_ws "$slot" "$name")
   local layout
-  layout=$(jq_config -r --arg ws "$ws" '
+  layout=$(jq_config -r --arg ws "$slot" '
     .settings.activeProfileId as $id
     | (.profiles[] | select(.id==$id) | .workspacePrefs[$ws].layout) // "dwindle"
   ' 2>/dev/null || echo dwindle)
   local locks
-  locks=$(jq_config -r --arg ws "$ws" '
+  locks=$(jq_config -r --arg ws "$slot" '
     .settings.activeProfileId as $id
     | [.profiles[] | select(.id==$id) | .assignments[]? | select((.workspace|tostring)==$ws and .lockPlace==true)] | length
   ' 2>/dev/null || echo 0)
@@ -198,12 +247,23 @@ bind_workspace_to_monitor() {
     layout=dwindle
   fi
   case "$layout" in
-    dwindle|scrolling|master) ;;
+    dwindle|scrolling|master|floating) ;;
     *) layout=dwindle ;;
   esac
-  hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = true, layout = "%s" })' "$ws" "$name" "$layout")" >/dev/null 2>&1 || true
+  # Drop a pre-4.5 rule that pinned the literal slot to a monitor Omarchy
+  # will pull back onto the laptop block.
+  if [[ $slot != "$ws" ]]; then
+    hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", persistent = false })' "$slot")" >/dev/null 2>&1 || true
+  fi
+  local hypr_layout="$layout"
+  [[ $hypr_layout == "floating" ]] && hypr_layout="dwindle"
+  hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = true, layout = "%s" })' "$ws" "$name" "$hypr_layout")" >/dev/null 2>&1 || true
+  if [[ $layout == "floating" ]]; then
+    hyprctl eval "$(printf 'o.workspace_mode({ workspace = "%s", mode = "floating" })' "$ws")" >/dev/null 2>&1 || true
+  fi
   move_workspace_to_monitor "$ws" "$name"
-  echo "bound workspace $ws → $name"
+  migrate_slot_windows "$slot" "$ws"
+  echo "bound workspace $slot → $name (hypr $ws)"
 }
 
 snapshot_workspaces() {
@@ -218,9 +278,25 @@ restore_unpinned_workspaces() {
   local enabled
   enabled=$(hyprctl -j monitors 2>/dev/null | jq -r '.[] | select(.disabled != true) | .name' 2>/dev/null)
   # Drop leftover persistent pins from a previous profile (Hyprland keeps them).
-  local n
+  local n pinned_ids=" "
+  while IFS=$'\t' read -r slot mon; do
+    [[ -n $slot && -n $mon ]] || continue
+    pinned_ids+="$(hypr_ws "$slot" "$mon") "
+  done < <(printf '%s' "$pinned_json" | python3 -c '
+import json, sys
+raw = sys.stdin.read() or "{}"
+try:
+    data = json.loads(raw)
+except Exception:
+    data = {}
+for slot, mon in (data.items() if isinstance(data, dict) else []):
+    print(f"{slot}\t{mon}")
+')
   for n in $(seq 1 10); do
     if printf '%s' "$pinned_json" | jq -e --arg ws "$n" 'has($ws)' >/dev/null 2>&1; then
+      continue
+    fi
+    if [[ " $pinned_ids " == *" $n "* ]]; then
       continue
     fi
     hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", persistent = false })' "$n")" >/dev/null 2>&1 || true
@@ -232,6 +308,9 @@ restore_unpinned_workspaces() {
     mon=$(printf '%s' "$item" | jq -r '.monitor // empty')
     [[ -n $ws && -n $mon ]] || continue
     if printf '%s' "$pinned_json" | jq -e --arg ws "$ws" 'has($ws)' >/dev/null 2>&1; then
+      continue
+    fi
+    if [[ " $pinned_ids " == *" $ws "* ]]; then
       continue
     fi
     if [[ " ${WORKSCAPE_OCCUPIED_WS:-} " == *" $ws "* ]]; then
@@ -440,9 +519,12 @@ cmd_launch() {
     echo "usage: $0 --launch <workspace> <exec> [silent] [geom-json]" >&2
     exit 1
   fi
-  if ! [[ $workspace =~ ^([1-9]|1[0-9]|20)$ ]]; then
+  if ! ws_ok "$workspace"; then
     echo "invalid workspace: $workspace" >&2
     exit 1
+  fi
+  if [[ -n $target_mon ]]; then
+    workspace=$(hypr_ws "$workspace" "$target_mon")
   fi
   # hl.exec_cmd does not honor Hyprland's "[workspace N silent]" exec prefix —
   # that string is run as a command. Focus the target workspace, then exec.
@@ -555,13 +637,15 @@ cmd_launch() {
   prev_ws=$(hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
   # Pin the workspace to its monitor without focusing it. Empty workspaces
   # follow the focused monitor (I-012); a workspace_rule + move is enough.
+  local pin_layout="${9:-dwindle}"
+  case "$pin_layout" in
+    dwindle|scrolling|master|floating) ;;
+    *) pin_layout=dwindle ;;
+  esac
   if [[ -n $target_mon && $target_mon =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ && $target_mon != *HEADLESS* ]]; then
-    local pin_layout="${9:-dwindle}"
-    case "$pin_layout" in
-      dwindle|scrolling|master) ;;
-      *) pin_layout=dwindle ;;
-    esac
-    timeout 2 hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = false, layout = "%s" })' "$workspace" "$target_mon" "$pin_layout")" </dev/null >/dev/null 2>&1 || true
+    local hypr_pin_layout="$pin_layout"
+    [[ $hypr_pin_layout == "floating" ]] && hypr_pin_layout="dwindle"
+    timeout 2 hyprctl eval "$(printf 'hl.workspace_rule({ workspace = "%s", monitor = "%s", persistent = false, layout = "%s" })' "$workspace" "$target_mon" "$hypr_pin_layout")" </dev/null >/dev/null 2>&1 || true
     timeout 2 hyprctl eval "$(printf 'hl.dispatch(hl.dsp.workspace.move({ workspace = "%s", monitor = "%s" }))' "$workspace" "$target_mon")" </dev/null >/dev/null 2>&1 || true
   fi
 
@@ -572,7 +656,11 @@ cmd_launch() {
   # Cap each attempt so Fresh Workscape still launches the rest of the profile.
   if ((silent_on)); then
     local rules
-    printf -v rules '{ workspace = "%s silent", no_initial_focus = true, tile = true }' "$workspace"
+    if [[ $pin_layout == "floating" ]]; then
+      printf -v rules '{ workspace = "%s silent", no_initial_focus = true }' "$workspace"
+    else
+      printf -v rules '{ workspace = "%s silent", no_initial_focus = true, tile = true }' "$workspace"
+    fi
     if timeout 3 hyprctl eval "hl.dispatch(hl.dsp.exec_cmd(\"$lua_escaped\", $rules))" </dev/null >/dev/null 2>&1; then
       launched=1
     fi
@@ -788,7 +876,7 @@ place_existing_on_ws() {
 
 move_window_to_ws() {
   local addr=$1 ws=$2
-  [[ $ws =~ ^([1-9]|10)$ ]] || return 0
+  ws_ok "$ws" || return 0
   [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || return 0
   hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.move({workspace="%s", window="address:%s", follow=false}))' "$ws" "$addr")" >/dev/null 2>&1 || true
 }
@@ -796,6 +884,8 @@ move_window_to_ws() {
 ensure_profile_windows() {
   local profile_id=$1
   local attempt item ws exec_cmd name existing clients_json missing used
+  local launch_mons ws_mon hid
+  launch_mons=$(live_monitors_json | python3 "$MATCH" --config "$CONFIG_FILE" --profile-id "$profile_id" --bindings 2>/dev/null || echo "{}")
   for attempt in 1 2 3 4; do
     missing=0
     used=""
@@ -809,7 +899,15 @@ ensure_profile_windows() {
         continue
       fi
       [[ -n $ws && -n $exec_cmd ]] || continue
-      existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$ws" "$used")
+      ws_mon=$(printf '%s' "$launch_mons" | jq -r --arg ws "$ws" '.[$ws] // empty' 2>/dev/null || true)
+      if [[ -n $ws_mon ]]; then
+        hid=$(hypr_ws "$ws" "$ws_mon")
+      else
+        hid=$(python3 -B "$BLOCKS" id --slot "$ws" --config "$CONFIG_FILE" --profile-id "$profile_id" 2>/dev/null || true)
+        hid=${hid//$'\n'/}
+        ws_ok "$hid" || hid=$ws
+      fi
+      existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$hid" "$used")
       if [[ -z $existing ]]; then
         missing=1
         echo "wait $name for ws $ws (attempt $attempt)" >&2
@@ -889,6 +987,12 @@ launch_profile_assignments() {
       fi
     fi
 
+    local ws_mon="" hid=$ws
+    ws_mon=$(printf '%s' "$launch_mons" | jq -r --arg ws "$ws" '.[$ws] // empty' 2>/dev/null || true)
+    if [[ -n $ws_mon ]]; then
+      hid=$(hypr_ws "$ws" "$ws_mon")
+    fi
+
     local item_only
     item_only=$(echo "$item" | jq -r 'if has("onlyOnBoot") then .onlyOnBoot else empty end')
     if [[ -z $item_only || $item_only == "null" ]]; then
@@ -902,14 +1006,14 @@ launch_profile_assignments() {
       continue
     fi
 
-    if [[ " $occupied_ws " == *" $ws "* ]]; then
+    if [[ " $occupied_ws " == *" $hid "* ]]; then
       echo "skip $name on ws $ws — workspace already has windows"
-      echo "$(date -u) SKIP occupied ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
+      echo "$(date -u) SKIP occupied ws=$ws hypr=$hid name=$name" >> "$boot_log" 2>/dev/null || true
       continue
     fi
 
     local existing
-    existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
+    existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$hid" "$used_addrs")
     if [[ -n $existing ]]; then
       echo "reuse $name ($existing) on ws $ws"
       echo "$(date -u) REUSE ws=$ws name=$name addr=$existing" >> "$boot_log" 2>/dev/null || true
@@ -923,8 +1027,6 @@ launch_profile_assignments() {
     if ((idx > 0)) && [[ $stagger -gt 0 ]]; then
       sleep "$(awk "BEGIN {print $stagger/1000}")"
     fi
-    local ws_mon=""
-    ws_mon=$(printf '%s' "$launch_mons" | jq -r --arg ws "$ws" '.[$ws] // empty' 2>/dev/null || true)
     local geom_json
     geom_json=$(echo "$item" | jq -c '.geom // empty')
     local cwd url
@@ -942,19 +1044,19 @@ launch_profile_assignments() {
     if [[ $lock_n =~ ^[0-9]+$ ]] && (( lock_n >= 2 )); then
       ws_layout=dwindle
     fi
-    if cmd_launch "$ws" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" "$ws_mon" "$ws_layout" </dev/null; then
+    if cmd_launch "$hid" "$exec_cmd" "$silent" "$geom_json" "$cwd" "$url" "$name" "$ws_mon" "$ws_layout" </dev/null; then
       echo "$(date -u) OK ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
     else
       echo "$(date -u) FAIL ws=$ws name=$name" >> "$boot_log" 2>/dev/null || true
       echo "failed to launch $name" >&2
     fi
     clients_json=$(hypr_clients_json)
-    existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$ws" "$used_addrs")
+    existing=$(place_existing_on_ws "$exec_cmd" "$name" "$clients_json" "$hid" "$used_addrs")
     if [[ -n $existing ]]; then
       used_addrs+="$existing "
-      echo "$(date -u) PLACE ws=$ws name=$name addr=$existing" >> "$boot_log" 2>/dev/null || true
+      echo "$(date -u) PLACE ws=$ws hypr=$hid name=$name addr=$existing" >> "$boot_log" 2>/dev/null || true
       if [[ -n $ws_mon ]]; then
-        move_workspace_to_monitor "$ws" "$ws_mon"
+        move_workspace_to_monitor "$hid" "$ws_mon"
       fi
     fi
     idx=$((idx + 1))
@@ -971,7 +1073,7 @@ launch_profile_assignments() {
   sleep 0.2
   apply_profile_geoms "$profile_id"
 
-  if [[ $apply_prev_ws =~ ^[1-9][0-9]?$ ]] && (( apply_prev_ws <= 20 )); then
+  if ws_ok "$apply_prev_ws"; then
     hyprctl eval "$(printf 'hl.dispatch(hl.dsp.focus({ workspace = "%s" }))' "$apply_prev_ws")" </dev/null >/dev/null 2>&1 || true
   fi
   unset WORKSCAPE_RESTORE_FOCUS
@@ -1105,12 +1207,16 @@ close_preset_workspaces() {
   local profile_id=$1
   local ws addr
   while IFS= read -r ws; do
-    [[ $ws =~ ^([1-9]|1[0-9]|20)$ ]] || continue
+    ws_ok "$ws" || continue
+    local hid
+    hid=$(python3 -B "$BLOCKS" id --slot "$ws" --config "$CONFIG_FILE" --profile-id "$profile_id" 2>/dev/null || true)
+    hid=${hid//$'\n'/}
+    ws_ok "$hid" || hid=$ws
     while IFS= read -r addr; do
       [[ $addr =~ ^0x[0-9a-fA-F]+$ ]] || continue
       hyprctl eval "$(printf 'hl.dispatch(hl.dsp.window.close({ window = "address:%s" }))' "$addr")" >/dev/null 2>&1 || true
       echo "close $addr on ws $ws"
-    done < <(hypr_clients_json | jq -r --arg ws "$ws" '.[] | select((.workspace.id|tostring) == $ws) | .address // empty' 2>/dev/null)
+    done < <(hypr_clients_json | jq -r --arg ws "$hid" '.[] | select((.workspace.id|tostring) == $ws) | .address // empty' 2>/dev/null)
   done < <(jq_config -r --arg id "$profile_id" '
     [.profiles[]? | select(.id==$id) | .assignments[]? | .workspace | tostring]
     | unique | .[]
@@ -1150,8 +1256,14 @@ cmd_fresh_apply() {
   profile_must_match "$profile_id" || exit 1
   echo "closing windows on $profile_id preset workspaces…"
   close_preset_workspaces "$profile_id"
-  local assigned leftover n
-  assigned=$(jq_config -r --arg id "$profile_id" '[.profiles[] | select(.id==$id) | .assignments[].workspace | tostring] | unique | join(" ")')
+  local assigned="" leftover n ws hid
+  while IFS= read -r ws; do
+    ws_ok "$ws" || continue
+    hid=$(python3 -B "$BLOCKS" id --slot "$ws" --config "$CONFIG_FILE" --profile-id "$profile_id" 2>/dev/null || true)
+    hid=${hid//$'\n'/}
+    ws_ok "$hid" || hid=$ws
+    assigned+="${assigned:+ }$hid"
+  done < <(jq_config -r --arg id "$profile_id" '[.profiles[] | select(.id==$id) | .assignments[].workspace | tostring] | unique | .[]')
   for n in 1 2 3 4 5 6 7 8 9 10; do
     leftover=$(hypr_clients_json | jq -r --arg ws "$assigned" '
       ($ws | split(" ")) as $a
@@ -1183,7 +1295,7 @@ cmd_apply_workspace_here() {
   local dest
   dest=$(timeout 2 hyprctl -j activeworkspace </dev/null 2>/dev/null | jq -r '.id // empty' 2>/dev/null || true)
   dest=${dest//$'\n'/}
-  if ! [[ $dest =~ ^([1-9]|1[0-9]|20)$ ]]; then
+  if ! ws_ok "$dest"; then
     echo "no focused workspace"
     notify "WorkScape" "No focused workspace"
     exit 1

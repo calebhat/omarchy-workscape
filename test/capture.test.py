@@ -98,8 +98,8 @@ def test_capture_ws2_keeps_uneven_split():
     assert abs(left["geom"]["w"] + right["geom"]["w"] - 1) < 0.001
     assert left["geom"]["w"] > 0.7
     assert right["geom"]["w"] < 0.3
-    assert left["lockPlace"] is True
-    assert right["lockPlace"] is True
+    assert left["lockPlace"] is False
+    assert right["lockPlace"] is False
     assert "herdr-shophawk" in left["exec"]
     assert "shophawk-panel" in right["exec"]
     assert left["exec"] != "foot"

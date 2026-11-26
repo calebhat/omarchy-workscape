@@ -115,11 +115,12 @@ def render_lua(g: dict) -> str:
         ]
     )
     if g["keyboard"]:
-        sel = "e" if skip else "r"
+        # m±1 stays on this monitor. e±1 walks the global list and lands on
+        # the next monitor's block under Omarchy 4.5.
         lines.extend(
             [
-                f'o.bind("SUPER + comma", "Previous workspace", hl.dsp.focus({{ workspace = "{sel}-1" }}))',
-                f'o.bind("SUPER + period", "Next workspace", hl.dsp.focus({{ workspace = "{sel}+1" }}))',
+                'o.bind("SUPER + comma", "Previous workspace", hl.dsp.focus({ workspace = "m-1" }))',
+                'o.bind("SUPER + period", "Next workspace", hl.dsp.focus({ workspace = "m+1" }))',
                 "",
             ]
         )
@@ -397,14 +398,15 @@ def write_and_apply(cfg: dict, profile_id: str = "", hypr_dir: str = "", reload:
     claim = keyboard_claim_path()
     claimed = claim.exists()
     if g["keyboard"]:
-        sel = "e" if g["skipEmpty"] else "r"
+        # Same as the file: m±1 stays on this monitor. e±1 crosses into the
+        # next monitor's block on Omarchy 4.5. Skip-empty is the trackpad only.
         hypr_eval('pcall(function() hl.unbind("SUPER + comma") end)')
         hypr_eval('pcall(function() hl.unbind("SUPER + period") end)')
         hypr_eval(
-            f'o.bind("SUPER + comma", "Previous workspace", hl.dsp.focus({{ workspace = "{sel}-1" }}))'
+            'o.bind("SUPER + comma", "Previous workspace", hl.dsp.focus({ workspace = "m-1" }))'
         )
         hypr_eval(
-            f'o.bind("SUPER + period", "Next workspace", hl.dsp.focus({{ workspace = "{sel}+1" }}))'
+            'o.bind("SUPER + period", "Next workspace", hl.dsp.focus({ workspace = "m+1" }))'
         )
         SAFE.write_atomic(claim, "1", mode=0o600)
     elif claimed:

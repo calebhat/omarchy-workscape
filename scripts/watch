@@ -12,6 +12,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
+BLOCKS = SourceFileLoader("workscape_blocks", str(Path(__file__).resolve().parent / "blocks")).load_module()
 _GEOM = None
 
 
@@ -50,7 +51,7 @@ def geom_mod():
     return _GEOM
 
 
-def load_active_profile() -> dict | None:
+def load_config() -> dict | None:
     path = config_path()
     if not path.exists():
         return None
@@ -58,8 +59,44 @@ def load_active_profile() -> dict | None:
         cfg = SAFE.load_json_file(path)
     except Exception:
         return None
+    return cfg if isinstance(cfg, dict) else None
+
+
+def load_active_profile() -> dict | None:
+    cfg = load_config()
+    if not cfg:
+        return None
     pid = ((cfg.get("settings") or {}).get("activeProfileId")) or ""
     return next((p for p in (cfg.get("profiles") or []) if p.get("id") == pid), None)
+
+
+def to_hypr(slot: str) -> str:
+    """Profile slot -> Hyprland id. An event id above 10 is already Hyprland's."""
+    cfg = load_config()
+    profile = load_active_profile()
+    if not cfg or not profile:
+        return str(slot)
+    return BLOCKS.id_for_profile_slot(cfg, profile, str(slot))
+
+
+def profile_slot(hid: str) -> str:
+    """Hyprland id -> profile slot. Empty when this id is not that profile's slot."""
+    cfg = load_config()
+    profile = load_active_profile()
+    if not cfg or not profile:
+        return str(hid)
+    pins = profile.get("workspaceMonitors") or {}
+    for slot in pins:
+        if BLOCKS.id_for_profile_slot(cfg, profile, str(slot)) == str(hid):
+            return str(slot)
+    try:
+        n = int(hid)
+    except (TypeError, ValueError):
+        return str(hid)
+    if 1 <= n <= 10 and str(n) in {str(k) for k in pins}:
+        if BLOCKS.id_for_profile_slot(cfg, profile, str(n)) != str(n):
+            return ""
+    return str(hid)
 
 
 def assignment_counts(profile: dict) -> dict[str, int]:
@@ -215,9 +252,10 @@ def window_count(ws: str) -> int:
     except Exception:
         return -1
     n = 0
+    hid = to_hypr(ws)
     for c in clients:
         w = c.get("workspace") or {}
-        if str(w.get("id")) == str(ws) or str(w.get("name")) == str(ws):
+        if str(w.get("id")) == hid or str(w.get("name")) == hid:
             n += 1
     return n
 
@@ -248,7 +286,7 @@ def hypr_eval(lua: str) -> None:
 
 def move_to_ws(addr: str, ws: str) -> None:
     addr = SAFE.safe_addr(addr)
-    ws = SAFE.safe_ws(ws)
+    ws = SAFE.safe_ws(to_hypr(ws))
     if not addr or not ws:
         return
     hypr_eval(
@@ -258,7 +296,7 @@ def move_to_ws(addr: str, ws: str) -> None:
 
 def focus_ws_and_window(ws: str, addr: str) -> None:
     addr = SAFE.safe_addr(addr)
-    ws = SAFE.safe_ws(ws)
+    ws = SAFE.safe_ws(to_hypr(ws))
     if not ws:
         return
     hypr_eval(f'hl.dispatch(hl.dsp.focus({{ workspace = "{ws}" }}))')
@@ -356,7 +394,7 @@ def sweep_block_extras() -> list[dict]:
     for ws, cap in blocked.items():
         if str(ws) in occupied:
             continue
-        on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == str(ws)]
+        on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == to_hypr(ws)]
         if len(on_ws) <= cap:
             continue
         extras = [c for c in on_ws if not window_is_assigned(c, profile, ws)]
@@ -396,7 +434,7 @@ def apply_focus_chrome() -> None:
         if not isinstance(chrome, dict):
             continue
         ws = str(a.get("workspace") or "")
-        on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == ws]
+        on_ws = [c for c in clients if str((c.get("workspace") or {}).get("id")) == to_hypr(ws)]
         hit = None
         name = str(a.get("name") or "").strip().lower()
         exec_s = str(a.get("exec") or a.get("command") or "").split()
@@ -430,7 +468,9 @@ def _handle_event_line(line: str) -> None:
         if addr and not addr.startswith("0x"):
             addr = "0x" + addr
         if addr and ws and ws.isdigit():
-            handle_open(addr, ws)
+            slot = profile_slot(ws)
+            if slot:
+                handle_open(addr, slot)
         return
     if line.startswith("monitoradded") or line.startswith("monitorremoved"):
         print(json.dumps({"monitorChange": True}), flush=True)

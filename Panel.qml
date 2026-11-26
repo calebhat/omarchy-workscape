@@ -46,7 +46,7 @@ Panel {
     property string appFilter: ""
     property bool adding: false
     property int formWorkspace: 1
-    property bool workspacePicked: false
+    property bool workspacePicked: true
     property string formName: ""
     property string formCommand: ""
     property string formType: "app"
@@ -54,7 +54,9 @@ Panel {
     property bool formNameEdited: false
     property string autoName: ""
     property bool fillingName: false
-    property string mainView: "profiles"
+    property string mainView: "workspaces"
+    property bool advancedMode: false
+    property bool heroAppDrawerOpen: false
     property string customCommand: ""
     property string customName: ""
     property var liveStatus: ({ live: [], profiles: [], matchedProfileId: "", bindings: {} })
@@ -191,6 +193,7 @@ Panel {
     }
     function dismissOrClose() {
         if (root.hotkeyCapture) { root.hotkeyCapture = ""; return }
+        if (root.heroAppDrawerOpen) { root.heroAppDrawerOpen = false; return }
         if (root.chromeOpen) { root.chromeOpen = false; return }
         if (root.organizerOpen) { root.organizerOpen = false; return }
         if (root.overflowOpen) { root.closeOverflow(); return }
@@ -611,12 +614,18 @@ Panel {
         root.addInstance(exec, name)
     }
     function captureWorkspace() {
-        captureProc.command = root.helperRun(["python3", root.pluginDir + "/scripts/capture", "--workspace", String(root.formWorkspace)], 8, 262144)
+        if (captureProc.running) return
+        errorText = ""
+        captureProc.hasExited = false
+        captureProc.stdoutDone = false
+        captureProc.exitCode = 0
+        captureProc.capturedText = ""
+        captureProc.command = root.helperRun(["python3", "-B", root.pluginDir + "/scripts/capture", "--workspace", String(root.formWorkspace), "--with-meta"], 8, 262144)
         captureProc.running = true
         statusText = "Capturing WS" + root.formWorkspace + "…"
         clearStatusTimer.restart()
     }
-    function applyCapture(rows) {
+    function applyCapture(rows, capturedMode) {
         var ws = root.formWorkspace
         var kept = []
         for (var i = 0; i < assignments.length; i++) if (assignments[i].workspace !== ws) kept.push(assignments[i])
@@ -637,18 +646,24 @@ Panel {
             var item = Model.normalizeAssignment(sorted[r])
             if (!item.exec) continue
             item.workspace = ws
+            item.lockPlace = false
             added.push(item)
         }
-        var tiled = 0
-        for (var t = 0; t < added.length; t++) if (added[t].place !== "float") tiled++
-        if (tiled >= 2) {
-            for (var k = 0; k < added.length; k++) {
-                if (added[k].place !== "float") added[k].lockPlace = true
+        assignments = kept.concat(added)
+        if (capturedMode === "dwindle" || capturedMode === "scrolling" || capturedMode === "floating") {
+            var cfg = Model.clone(config)
+            var prof = Model.profileById(cfg, activeProfileId)
+            if (prof) {
+                if (!prof.workspacePrefs) prof.workspacePrefs = {}
+                var p = Model.normalizeWorkspacePref(prof.workspacePrefs[String(ws)])
+                p.layout = capturedMode
+                prof.workspacePrefs[String(ws)] = p
+                config = cfg
             }
         }
-        assignments = kept.concat(added)
         saveConfig()
-        statusText = "Captured " + added.length + " window" + (added.length === 1 ? "" : "s") + " on WS" + ws
+        var modeLabel = capturedMode === "floating" ? "Floating" : (capturedMode === "scrolling" ? "Scrolling" : "Tiling")
+        statusText = "Captured " + added.length + " window" + (added.length === 1 ? "" : "s") + " on WS" + ws + " (" + modeLabel + ")"
         clearStatusTimer.restart()
         root.countsChanged()
     }
@@ -1305,7 +1320,8 @@ Panel {
                 var prof = Model.profileById(sane, sane.settings.activeProfileId)
                 root.assignments = (prof && prof.assignments) ? prof.assignments.slice() : []
                 root.formWorkspace = sane.settings.lastFormWorkspace
-                root.mainView = Model.allowedMainView(sane.settings.lastMainView)
+                root.workspacePicked = true
+                root.mainView = "workspaces"
                 var others = []
                 for (var p = 0; p < sane.profiles.length; p++)
                     if (sane.profiles[p].id !== sane.settings.activeProfileId) others.push(sane.profiles[p].id)
@@ -1364,17 +1380,54 @@ Panel {
     }
     Process {
         id: captureProc
-        stdout: StdioCollector { id: captureOut; waitForEnd: true }
-        stderr: StdioCollector { id: captureErr; waitForEnd: true }
-        onExited: function(code) {
-            if (code !== 0) { errorText = "Capture failed: " + (captureErr.text || code); return }
+        property bool hasExited: false
+        property bool stdoutDone: false
+        property int exitCode: 0
+        property string capturedText: ""
+        function finishIfReady() {
+            if (!hasExited || !stdoutDone) return
+            if (exitCode !== 0) {
+                errorText = "Capture failed: " + ((captureErr.text || "").trim() || exitCode)
+                return
+            }
+            var raw = (capturedText || captureOut.text || "").trim()
+            var parsed = null
             try {
-                var rows = Model.parseCappedJson(captureOut.text || "[]", 262144)
-                if (!Array.isArray(rows)) throw "bad json"
-                root.applyCapture(rows)
+                parsed = Model.parseCappedJson(raw, 262144)
+                if (!parsed) {
+                    var startObj = raw.indexOf("{")
+                    var startArr = raw.indexOf("[")
+                    var start = (startObj >= 0 && (startArr < 0 || startObj < startArr)) ? startObj : startArr
+                    if (start > 0) parsed = Model.parseCappedJson(raw.slice(start), 262144)
+                }
             } catch (e) {
+                console.warn("[workscape] capture parse failed; err=" + e + " raw=" + raw.slice(0, 200))
+                errorText = "Capture parse failed"
+                return
+            }
+            if (Array.isArray(parsed)) {
+                root.applyCapture(parsed, "")
+            } else if (parsed && Array.isArray(parsed.windows)) {
+                root.applyCapture(parsed.windows, String(parsed.mode || ""))
+            } else {
+                console.warn("[workscape] capture parse failed; bad shape raw=" + raw.slice(0, 200))
                 errorText = "Capture parse failed"
             }
+        }
+        stdout: StdioCollector {
+            id: captureOut
+            waitForEnd: true
+            onStreamFinished: {
+                captureProc.capturedText = captureOut.text || ""
+                captureProc.stdoutDone = true
+                captureProc.finishIfReady()
+            }
+        }
+        stderr: StdioCollector { id: captureErr; waitForEnd: true }
+        onExited: function(code) {
+            captureProc.exitCode = code
+            captureProc.hasExited = true
+            captureProc.finishIfReady()
         }
     }
     Process {
@@ -1544,13 +1597,6 @@ Panel {
         return (h && h.text) ? h.text : ""
     }
 
-    Shortcut {
-        sequence: "Escape"
-        enabled: root.opened && root.hotkeyCapture === ""
-        context: Qt.ApplicationShortcut
-        onActivated: root.dismissOrClose()
-    }
-
     KeyboardPanel {
         id: panel
         anchorItem: root.anchorItem
@@ -1566,7 +1612,15 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
-            blocked: root.hotkeyCapture !== "" || root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || root.organizerOpen || root.chromeOpen || filterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
+            Keys.onEscapePressed: function(event) { root.dismissOrClose(); event.accepted = true }
+
+            Shortcut {
+                sequence: "Escape"
+                enabled: root.opened
+                context: Qt.WindowShortcut
+                onActivated: root.dismissOrClose()
+            }
+            blocked: root.hotkeyCapture !== "" || root.transferOpen || root.newProfileOpen || root.editNetworkOpen || root.overflowOpen || root.organizerOpen || root.chromeOpen || filterField.activeFocus || heroFilterField.activeFocus || customField.activeFocus || customNameField.activeFocus || (typeof visibleCountField !== "undefined" && visibleCountField.activeFocus) || (typeof newProfileNameField !== "undefined" && newProfileNameField.activeFocus) || (typeof editNetworkSsidField !== "undefined" && (editNetworkSsidField.activeFocus || editNetworkSubnetField.activeFocus || editNetworkConnField.activeFocus))
             onMoveRequested: function(dx, dy) { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.moveCursor(dx, dy) }
             onActivateRequested: { if (!root.transferOpen && !root.newProfileOpen && !root.editNetworkOpen && !root.overflowOpen && !root.organizerOpen && !root.chromeOpen) root.activateCursor() }
             onCloseRequested: root.dismissOrClose()
@@ -1574,20 +1628,26 @@ Panel {
             onTextKey: function(t) {
                 if (t === "/") {
                     cursorActive = false
-                    filterField.forceActiveFocus()
-                    filterField.selectAll()
+                    if (!root.advancedMode) {
+                        root.heroAppDrawerOpen = true
+                        heroFilterField.forceActiveFocus()
+                        heroFilterField.selectAll()
+                    } else {
+                        filterField.forceActiveFocus()
+                        filterField.selectAll()
+                    }
                 }
             }
 
             ColumnLayout {
                 id: content
                 anchors.fill: parent
-                spacing: Style.space(8)
+                spacing: Style.space(10)
 
                 PanelHero {
                     Layout.fillWidth: true
                     title: "WorkScape"
-                    meta: (root.activeProfile.name || "Profile") + " · " + root.totalCount + " apps · " + (root.config.profiles || []).length + " profiles"
+                    meta: (root.activeProfile.name || "Profile") + " · " + root.assignments.length + " saved " + (root.assignments.length === 1 ? "window" : "windows") + (root.activeMatchLabel !== "" ? (" · " + root.activeMatchLabel) : "")
                     foreground: root.foreground
                     fontFamily: root.fontFamily
                     iconComponent: Component {
@@ -1602,16 +1662,17 @@ Panel {
                         Row {
                             spacing: Style.space(6)
                             Button {
-                                text: root.applyBusy ? "Applying…" : "Apply matching"
-                                tooltipText: "Load the profile for the connected displays. Moves existing workspaces onto that layout’s monitors. Does not close windows — use Fresh to relaunch."
+                                selected: true
+                                text: root.applyBusy ? "Recreating…" : "Recreate all"
+                                tooltipText: "Recreate your saved workspaces for the connected displays. Occupied workspaces are left untouched."
                                 enabled: !root.applyBusy
                                 onClicked: root.applyMatching()
                             }
                             Button {
-                                text: "Fresh Workscape"
+                                text: "Fresh"
                                 tooltipText: (root.activeApplyHint && !root.activeApplyHint.canApply)
                                     ? (root.activeApplyHint.refuseText || "This profile doesn't match the connected displays")
-                                    : "Close workspaces that have apps in this profile, then apply from scratch. Refused if this profile's displays aren't connected."
+                                    : "Close saved workspaces first, then recreate them cleanly from scratch."
                                 enabled: !root.applyBusy && root.activeProfileId !== "" && !!(root.activeApplyHint && root.activeApplyHint.canApply)
                                 onClicked: root.applyFreshProfile(root.activeProfileId)
                             }
@@ -1619,19 +1680,29 @@ Panel {
                     }
                 }
 
+                // Top navigation: clean 2-mode switcher + compact profile selector
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: Style.space(10)
-                    Text {
-                        text: "PROFILE"
-                        color: root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
-                        font.letterSpacing: 1.2
+                    ButtonGroup {
+                        Layout.preferredWidth: Style.space(260)
+                        foreground: root.foreground
+                        options: [
+                            { value: "simple", label: "Workspaces" },
+                            { value: "advanced", label: "Advanced" }
+                        ]
+                        value: root.advancedMode ? "advanced" : "simple"
+                        onChanged: function(v) {
+                            if (!v) return
+                            root.advancedMode = (v === "advanced")
+                            if (root.advancedMode && root.mainView === "") root.mainView = "workspaces"
+                            liveProc.running = true
+                        }
                     }
+                    Item { Layout.fillWidth: true }
                     Dropdown {
-                        Layout.fillWidth: true
+                        visible: root.profileOptions.length > 1
+                        Layout.preferredWidth: Style.space(200)
                         label: "Profile"
                         showLabel: false
                         foreground: root.foreground
@@ -1639,27 +1710,477 @@ Panel {
                         options: root.profileOptions
                         onChanged: function(v) { if (v && v !== root.activeProfileId) root.setActiveProfile(v) }
                     }
-                    Text {
-                        visible: root.activeMatchLabel !== ""
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        textFormat: Text.PlainText
-                        text: root.activeMatchLabel
-                        color: (root.activeApplyHint && root.activeApplyHint.matches) ? Color.accent : root.dim
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.caption
-                        font.bold: true
+                    Button {
+                        text: "+ Profile"
+                        tooltipText: "Save your current display setup as a new profile"
+                        onClicked: root.openNewProfile()
                     }
                 }
 
+                // ——— HERO STUDIO (Default clean view) ———
+                ColumnLayout {
+                    visible: !root.advancedMode
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: Style.space(10)
+
+                    // Sleek workspace pill strip (1–10) with saved-layout dots
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 10
+                        columnSpacing: Style.space(6)
+                        rowSpacing: Style.space(4)
+                        Repeater {
+                            model: 10
+                            delegate: Rectangle {
+                                id: wsPill
+                                required property int index
+                                readonly property int wsNum: index + 1
+                                readonly property int appCount: root.getAppsForWs(wsNum).length
+                                readonly property bool isSelected: root.formWorkspace === wsNum
+                                readonly property bool hovered: wsPillHover.hovered
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Style.space(38)
+                                radius: Style.cornerRadius
+                                color: isSelected
+                                    ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.22)
+                                    : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, hovered ? 0.10 : 0.04)
+                                border.width: isSelected ? 1.5 : 1
+                                border.color: isSelected
+                                    ? Color.accent
+                                    : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, hovered ? 0.30 : 0.12)
+                                Behavior on color { ColorAnimation { duration: 120 } }
+                                Behavior on border.color { ColorAnimation { duration: 120 } }
+
+                                Column {
+                                    anchors.centerIn: parent
+                                    spacing: Style.space(3)
+                                    Text {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: String(wsPill.wsNum)
+                                        color: wsPill.isSelected ? Color.accent : (wsPill.appCount > 0 ? root.foreground : root.dim)
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.body
+                                        font.bold: wsPill.isSelected || wsPill.appCount > 0
+                                    }
+                                    Rectangle {
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: wsPill.appCount > 0 ? Style.space(14) : Style.space(4)
+                                        height: Style.space(3)
+                                        radius: Style.space(2)
+                                        visible: wsPill.appCount > 0
+                                        color: wsPill.isSelected ? Color.accent : Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.65)
+                                    }
+                                }
+
+                                HoverHandler {
+                                    id: wsPillHover
+                                    cursorShape: Qt.PointingHandCursor
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.selectWorkspace(wsPill.wsNum)
+                                }
+                            }
+                        }
+                    }
+
+                    // Centerpiece Hero Stage: Visual Layout Preview + Optional Slide-in App Drawer
+                    BorderSurface {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: Style.space(250)
+                        radius: Style.cornerRadius
+                        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+                        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: Style.space(12)
+                            spacing: Style.space(10)
+
+                            // Stage top bar
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(8)
+                                Text {
+                                    text: {
+                                        var nm = (root.activeProfile.workspaceNames && root.activeProfile.workspaceNames[String(root.formWorkspace)]) || ""
+                                        return nm !== "" ? ("Workspace " + root.formWorkspace + " · " + nm) : ("Workspace " + root.formWorkspace)
+                                    }
+                                    color: root.foreground
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.subtitle || (Style.font.body + 2)
+                                    font.bold: true
+                                }
+                                Rectangle {
+                                    radius: Style.space(10)
+                                    color: root.addedApps.length > 0
+                                        ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+                                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                                    implicitWidth: wsCountLabel.implicitWidth + Style.space(14)
+                                    implicitHeight: wsCountLabel.implicitHeight + Style.space(6)
+                                    Text {
+                                        id: wsCountLabel
+                                        anchors.centerIn: parent
+                                        text: root.addedApps.length === 0 ? "Empty" : (root.addedApps.length + (root.addedApps.length === 1 ? " window" : " windows"))
+                                        color: root.addedApps.length > 0 ? Color.accent : root.dim
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                        font.bold: true
+                                    }
+                                }
+                                Dropdown {
+                                    Layout.preferredWidth: Style.space(128)
+                                    label: "Mode"
+                                    showLabel: false
+                                    foreground: root.foreground
+                                    value: root.currentWsPref.layout || "dwindle"
+                                    options: {
+                                        var opts = [
+                                            { value: "dwindle", label: "Tiling" },
+                                            { value: "scrolling", label: "Scrolling" },
+                                            { value: "floating", label: "Floating" }
+                                        ]
+                                        if (root.currentWsPref.layout === "master")
+                                            opts.push({ value: "master", label: "Master" })
+                                        return opts
+                                    }
+                                    onChanged: function(v) {
+                                        if (v && v !== root.currentWsPref.layout)
+                                            root.setWorkspacePref("layout", v)
+                                    }
+                                }
+                                Item { Layout.fillWidth: true }
+                                Button {
+                                    visible: root.addedApps.length > 0
+                                    selected: true
+                                    text: "✦ Capture open windows"
+                                    tooltipText: "Snapshot the windows currently open on Workspace " + root.formWorkspace + " along with their exact split layout"
+                                    onClicked: root.captureWorkspace()
+                                }
+                                Button {
+                                    visible: root.addedApps.length > 0 || root.heroAppDrawerOpen
+                                    selected: root.heroAppDrawerOpen
+                                    text: root.heroAppDrawerOpen ? "Done adding" : "+ Add app"
+                                    tooltipText: "Pick apps to launch on Workspace " + root.formWorkspace
+                                    onClicked: {
+                                        root.heroAppDrawerOpen = !root.heroAppDrawerOpen
+                                        if (root.heroAppDrawerOpen) Qt.callLater(function() { heroFilterField.forceActiveFocus() })
+                                    }
+                                }
+                                Button {
+                                    visible: root.addedApps.length > 0
+                                    text: "Arrange"
+                                    tooltipText: "Open full visual organizer to drag, split, or float windows"
+                                    onClicked: root.organizerOpen = true
+                                }
+                            }
+
+                            // Stage content: Preview canvas + optional App Picker drawer
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                spacing: Style.space(10)
+
+                                Item {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    clip: true
+
+                                    WorkspacePreview {
+                                        visible: root.addedApps.length > 0
+                                        anchors.fill: parent
+                                        bar: root.bar
+                                        workspace: root.formWorkspace
+                                        assignedApps: root.addedApps
+                                        lockAll: root.lockUiEnabled && (root.currentWsPref.lockSizes === true || root.allAssignedLocked)
+                                        appList: root.appList
+                                        screenW: panel.screenW
+                                        screenH: panel.screenH
+                                        hyprLayout: root.currentWsPref.layout
+                                        columnWidth: 1 / Math.max(1, root.currentWsPref.visibleCount)
+                                        onLayoutChanged: function(tiles) { root.applyPreviewLayout(tiles) }
+                                        onLayoutCleared: root.resetPreviewLayout()
+                                        onAppLockToggled: function(id) { root.toggleAppLockById(id) }
+                                        onOrganizerRequested: root.organizerOpen = true
+                                        onWindowRemoved: function(id) { root.removeAssignment(id) }
+                                    }
+
+                                    // Clean product-demo empty state
+                                    ColumnLayout {
+                                        visible: root.addedApps.length === 0
+                                        anchors.centerIn: parent
+                                        width: Math.min(parent.width - Style.space(32), Style.space(420))
+                                        spacing: Style.space(10)
+                                        Text {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            text: "󱂬"
+                                            color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.75)
+                                            font.family: root.fontFamily
+                                            font.pixelSize: Style.space(36)
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            horizontalAlignment: Text.AlignHCenter
+                                            wrapMode: Text.WordWrap
+                                            text: "Save Workspace " + root.formWorkspace + " from your open windows"
+                                            color: root.foreground
+                                            font.family: root.fontFamily
+                                            font.pixelSize: Style.font.body + 1
+                                            font.bold: true
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            horizontalAlignment: Text.AlignHCenter
+                                            wrapMode: Text.WordWrap
+                                            text: "Arrange your apps on Workspace " + root.formWorkspace + " the way you like them, then click Capture — or pick apps manually."
+                                            color: root.dim
+                                            font.family: root.fontFamily
+                                            font.pixelSize: Style.font.caption
+                                        }
+                                        RowLayout {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            Layout.topMargin: Style.space(4)
+                                            spacing: Style.space(8)
+                                            Button {
+                                                selected: true
+                                                text: "✦ Capture open windows"
+                                                onClicked: root.captureWorkspace()
+                                            }
+                                            Button {
+                                                text: "+ Add app"
+                                                onClicked: {
+                                                    root.heroAppDrawerOpen = true
+                                                    Qt.callLater(function() { heroFilterField.forceActiveFocus() })
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // On-demand slide-in App Picker drawer
+                                BorderSurface {
+                                    visible: root.heroAppDrawerOpen
+                                    Layout.preferredWidth: Style.space(270)
+                                    Layout.fillHeight: true
+                                    radius: Style.cornerRadius
+                                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                                    borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: Style.space(8)
+                                        spacing: Style.space(6)
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: Style.space(4)
+                                            TextField {
+                                                id: heroFilterField
+                                                Layout.fillWidth: true
+                                                verticalPadding: Style.space(5)
+                                                placeholderText: "Search apps…"
+                                                foreground: root.foreground
+                                                accent: Color.accent
+                                                font.family: root.fontFamily
+                                                text: root.appFilter
+                                                onTextChanged: { root.appFilter = text; root.cursorActive = false }
+                                                Keys.onPressed: function(event) {
+                                                    if (event.key === Qt.Key_Escape) { root.heroAppDrawerOpen = false; event.accepted = true }
+                                                }
+                                            }
+                                            Button {
+                                                text: "✕"
+                                                tooltipText: "Close app picker"
+                                                onClicked: root.heroAppDrawerOpen = false
+                                            }
+                                        }
+                                        ScrollView {
+                                            id: heroAppsScroll
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            clip: true
+                                            rightPadding: Style.space(12)
+                                            contentWidth: availableWidth
+                                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                                            ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                                            Column {
+                                                width: heroAppsScroll.availableWidth
+                                                spacing: Style.space(3)
+                                                Repeater {
+                                                    model: root.filteredApps
+                                                    delegate: AppRow {
+                                                        app: modelData
+                                                        rowIndex: index
+                                                        width: parent.width
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Bottom Quick Automation Row: Per-Workspace Hotkey + Startup & Global Hotkey
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Style.space(10)
+
+                        SectionCard {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.preferredWidth: 1
+                            title: "WORKSPACE " + root.formWorkspace + " HOTKEY"
+                            hint: "Recreates Workspace " + root.formWorkspace + "'s saved layout on whichever empty workspace is focused."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(8)
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: Style.space(30)
+                                    radius: Style.cornerRadius
+                                    color: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                        ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+                                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                                    border.width: 1
+                                    border.color: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                        ? Color.accent
+                                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+                                    Text {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Style.space(10)
+                                        anchors.rightMargin: Style.space(10)
+                                        verticalAlignment: Text.AlignVCenter
+                                        textFormat: Text.PlainText
+                                        text: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                            ? "Press shortcut keys… (Esc cancels)"
+                                            : (root.workspaceHotkey(root.formWorkspace) || "No hotkey set")
+                                        color: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                            ? Color.accent
+                                            : (root.workspaceHotkey(root.formWorkspace) ? root.foreground : root.dim)
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                        font.bold: root.workspaceHotkey(root.formWorkspace) !== ""
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                Button {
+                                    bordered: true
+                                    selected: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                    text: root.hotkeyCapture === ("ws:" + root.formWorkspace)
+                                        ? "Listening…"
+                                        : (root.workspaceHotkey(root.formWorkspace) ? "Change" : "Set")
+                                    tooltipText: "Click, then press a key. Super is included; hold Shift/Ctrl/Alt for extra modifiers."
+                                    onClicked: {
+                                        if (root.hotkeyCapture === ("ws:" + root.formWorkspace)) root.hotkeyCapture = ""
+                                        else root.startHotkeyCapture("ws:" + root.formWorkspace)
+                                    }
+                                }
+                                Button {
+                                    visible: root.workspaceHotkey(root.formWorkspace) !== ""
+                                    text: "Clear"
+                                    onClicked: root.commitHotkey(String(root.formWorkspace), "")
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: "Press this shortcut on any empty workspace to open Workspace " + root.formWorkspace + "'s layout."
+                                color: root.dim
+                                font.family: root.fontFamily
+                                font.pixelSize: Style.font.caption - 1
+                            }
+                        }
+
+                        SectionCard {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.preferredWidth: 1
+                            title: "STARTUP & RECREATE ALL"
+                            hint: "Automatically recreate your matching display profile when you log in, or trigger it anytime with a global hotkey."
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+
+                            WrapToggle {
+                                Layout.fillWidth: true
+                                label: "Recreate workspaces on startup"
+                                checked: root.config.settings && root.config.settings.applyOnBoot === true
+                                foreground: root.foreground
+                                onClicked: root.setApplyOnBoot(!(root.config.settings && root.config.settings.applyOnBoot === true))
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Style.space(8)
+                                Text {
+                                    text: "Global hotkey"
+                                    color: root.dim
+                                    font.family: root.fontFamily
+                                    font.pixelSize: Style.font.caption
+                                }
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: Style.space(28)
+                                    radius: Style.cornerRadius
+                                    color: root.hotkeyCapture === "applyMatching"
+                                        ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.16)
+                                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                                    border.width: 1
+                                    border.color: root.hotkeyCapture === "applyMatching"
+                                        ? Color.accent
+                                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+                                    Text {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Style.space(8)
+                                        anchors.rightMargin: Style.space(8)
+                                        verticalAlignment: Text.AlignVCenter
+                                        textFormat: Text.PlainText
+                                        text: root.hotkeyCapture === "applyMatching"
+                                            ? "Press shortcut…"
+                                            : (root.currentHotkeys.applyMatching || "Not set")
+                                        color: root.hotkeyCapture === "applyMatching"
+                                            ? Color.accent
+                                            : (root.currentHotkeys.applyMatching ? root.foreground : root.dim)
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.caption
+                                        font.bold: root.currentHotkeys.applyMatching !== ""
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                Button {
+                                    bordered: true
+                                    selected: root.hotkeyCapture === "applyMatching"
+                                    text: root.hotkeyCapture === "applyMatching" ? "Listening…" : (root.currentHotkeys.applyMatching ? "Change" : "Set")
+                                    onClicked: {
+                                        if (root.hotkeyCapture === "applyMatching") root.hotkeyCapture = ""
+                                        else root.startHotkeyCapture("applyMatching")
+                                    }
+                                }
+                                Button {
+                                    visible: root.currentHotkeys.applyMatching !== ""
+                                    text: "Clear"
+                                    onClicked: root.commitHotkey("applyMatching", "")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ——— ADVANCED SUB-NAVIGATION ———
                 ButtonGroup {
+                    visible: root.advancedMode
                     Layout.fillWidth: true
                     foreground: root.foreground
                     options: [
+                        { value: "workspaces", label: "Layout & Apps" },
                         { value: "profiles", label: "Profiles" },
-                        { value: "workspaces", label: "Workspaces" },
                         { value: "displays", label: "Displays" },
-                        { value: "gestures", label: "Gestures" }
+                        { value: "gestures", label: "Gestures & Hotkeys" }
                     ]
                     value: root.mainView
                     onChanged: function(v) {
@@ -1670,9 +2191,9 @@ Panel {
                     }
                 }
 
-                // ——— Workspaces ———
+                // ——— Advanced: Workspaces (Layout & Apps) ———
                 ColumnLayout {
-                    visible: root.mainView === "workspaces"
+                    visible: root.advancedMode && root.mainView === "workspaces"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.minimumHeight: Style.space(360)
@@ -1704,7 +2225,10 @@ Panel {
                             rowSpacing: Style.space(4)
                             Repeater {
                                 model: {
-                                    var rows = [{ value: "dwindle", label: "Dwindle" }]
+                                    var rows = [
+                                        { value: "dwindle", label: "Tiling" },
+                                        { value: "floating", label: "Floating" }
+                                    ]
                                     if (root.currentWsUi.showScrollingLayout)
                                         rows.push({ value: "scrolling", label: "Scrolling" })
                                     if (root.currentWsUi.showMasterLayout)
@@ -2082,7 +2606,7 @@ Panel {
 
                 // ——— Displays (selected profile) ———
                 ColumnLayout {
-                    visible: root.mainView === "displays"
+                    visible: root.advancedMode && root.mainView === "displays"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     spacing: Style.space(10)
@@ -2172,7 +2696,7 @@ Panel {
                 // ——— Gestures ———
                 ScrollView {
                     id: gestureScroll
-                    visible: root.mainView === "gestures"
+                    visible: root.advancedMode && root.mainView === "gestures"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -2361,7 +2885,7 @@ Panel {
                                     foreground: root.foreground
                                     onClicked: root.setGestureField("keyboard", !root.currentGestures.keyboard)
                                 }
-                                HintMark { tooltipText: "Comma and period (the < > keys). Follows Skip empty above." }
+                                HintMark { tooltipText: "Comma and period (the < > keys). Stays on this monitor's workspaces." }
                             }
                         }
 
@@ -2506,7 +3030,7 @@ Panel {
 
                 // ——— Profiles catalog ———
                 ColumnLayout {
-                    visible: root.mainView === "profiles"
+                    visible: root.advancedMode && root.mainView === "profiles"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     spacing: Style.space(10)
@@ -2670,6 +3194,7 @@ Panel {
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: {
                                             root.setActiveProfile(modelData.id)
+                                            root.advancedMode = false
                                             root.mainView = "workspaces"
                                             saveConfig()
                                         }
@@ -2732,8 +3257,8 @@ Panel {
                                         RowLayout {
                                             Layout.fillWidth: true
                                             spacing: Style.space(6)
-                                            Button { text: "Workspaces"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "workspaces" } }
-                                            Button { text: "Displays"; onClicked: { root.setActiveProfile(modelData.id); root.mainView = "displays" } }
+                                            Button { text: "Workspaces"; onClicked: { root.setActiveProfile(modelData.id); root.advancedMode = false; root.mainView = "workspaces" } }
+                                            Button { text: "Displays"; onClicked: { root.setActiveProfile(modelData.id); root.advancedMode = true; root.mainView = "displays" } }
                                             Button {
                                                 text: "Apply"
                                                 enabled: {

@@ -131,7 +131,7 @@ SSID names can be spoofed. Treat network matching as home vs office convenience,
 
 Pick workspace **1–10** for app presets (overflow chain can use **1–20**).
 
-**Load workspace on** pins that workspace to a named monitor in this profile.
+**Load workspace on** pins that workspace to a named monitor in this profile. On Omarchy 4.5 each monitor has its own workspaces 1–10; a pin uses that monitor’s block, so workspace 1 on the left display is not the laptop’s workspace 1. Dwindle and scrolling are saved as that workspace’s Omarchy layout, so Super+L and the next login show the same one. Super+, and Super+. stay on the monitor you are on.
 
 **Toggle apps** in the list to place them on the selected workspace. The name shows a live **×N** count of that app on this workspace; the subtitle says **N on this workspace** when there is more than one. **+** adds another window of the same app (two Braves, two terminals). Toggle off removes one instance (the last). Custom commands go in the bottom row.
 

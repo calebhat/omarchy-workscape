@@ -11,8 +11,10 @@ SAFE = SourceFileLoader(
 def test_safe_ws():
     assert SAFE.safe_ws("8") == "8"
     assert SAFE.safe_ws("20") == "20"
+    assert SAFE.safe_ws("21") == "21"
+    assert SAFE.safe_ws("200") == "200"
     assert SAFE.safe_ws("0") is None
-    assert SAFE.safe_ws("21") is None
+    assert SAFE.safe_ws("201") is None
     assert SAFE.safe_ws("1;hl.dispatch") is None
 
 

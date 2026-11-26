@@ -378,12 +378,8 @@ def capture_workspace(ws: str) -> list[dict]:
     proxies = collapse_group_tiles(out)
     tessellate_tile_geoms(proxies)
     fan_out_group_tiles(proxies)
-    tiled_n = sum(1 for p in proxies if p.get("place") != "float")
-    if tiled_n >= 2:
-        for it in out:
-            if it.get("place") != "float":
-                it["lockPlace"] = True
     for it in out:
+        it["lockPlace"] = False
         it.pop("_addr", None)
     return out
 
@@ -391,12 +387,20 @@ def capture_workspace(ws: str) -> list[dict]:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--workspace", required=True)
+    p.add_argument("--with-meta", action="store_true")
     args = p.parse_args()
     ws = str(args.workspace)
     if not _WS_OK.fullmatch(ws):
-        print("[]")
+        print('{"mode":"dwindle","windows":[]}' if args.with_meta else "[]")
         return 1
-    json.dump(capture_workspace(ws), sys.stdout)
+    rows = capture_workspace(ws)
+    if args.with_meta:
+        modes = SourceFileLoader(
+            "workscape_modes", str(Path(__file__).resolve().parent / "modes")
+        ).load_module()
+        json.dump({"mode": modes.current_workspace_mode(ws), "windows": rows}, sys.stdout)
+    else:
+        json.dump(rows, sys.stdout)
     sys.stdout.write("\n")
     return 0
 

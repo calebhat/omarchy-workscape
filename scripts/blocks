@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Omarchy 4.5 per-monitor workspace ids.
+
+Hyprland numbers workspaces globally. Omarchy gives each physical monitor a
+block of ten: the laptop panel is 1-10, the next monitor 11-20, and so on.
+WorkScape profiles still store slots 1-10 pinned to a monitor. This module
+turns a slot plus that monitor's identity into the Hyprland id Omarchy keeps
+on that screen. A slot with no pin, or a slot above 10, stays the literal id.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+SLOTS = 10
+MAX_ID = 200
+_SUFFIX = re.compile(r" #\d+$")
+_monitors_cache: list[dict] | None = None
+
+
+def state_path() -> Path:
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")
+    return Path(state) / "omarchy" / "monitor-workspaces"
+
+
+def load_rows(path: Path | None = None) -> list[dict]:
+    file = path or state_path()
+    rows: list[dict] = []
+    try:
+        text = file.read_text(encoding="utf-8")
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        try:
+            block = int(parts[0])
+        except ValueError:
+            continue
+        if block < 0 or block > (MAX_ID // SLOTS) - 1:
+            continue
+        rows.append({
+            "block": block,
+            "connector": parts[1].strip(),
+            "identity": parts[2].strip(),
+        })
+    return rows
+
+
+def _base(identity: str) -> str:
+    return _SUFFIX.sub("", identity or "")
+
+
+def block_for_identity(description: str, connector: str = "", rows: list[dict] | None = None) -> int | None:
+    rows = load_rows() if rows is None else rows
+    desc = (description or "").strip()
+    name = (connector or "").strip()
+    if desc:
+        for row in rows:
+            if row["identity"] == desc or _base(row["identity"]) == desc:
+                return int(row["block"])
+    if name:
+        for row in rows:
+            if row["connector"] and row["connector"] == name:
+                return int(row["block"])
+    return None
+
+
+def _hypr_monitors() -> list[dict]:
+    global _monitors_cache
+    if _monitors_cache is not None:
+        return _monitors_cache
+    try:
+        proc = subprocess.run(
+            ["hyprctl", "monitors", "-j"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        data = json.loads(proc.stdout or "[]")
+        _monitors_cache = data if isinstance(data, list) else []
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        _monitors_cache = []
+    return _monitors_cache
+
+
+def block_for_connector(connector: str, rows: list[dict] | None = None) -> int | None:
+    name = (connector or "").strip()
+    if not name:
+        return None
+    rows = load_rows() if rows is None else rows
+    block = block_for_identity("", name, rows)
+    if block is not None:
+        return block
+    mon = next((m for m in _hypr_monitors() if str(m.get("name") or "") == name), None)
+    if mon:
+        block = block_for_identity(str(mon.get("description") or ""), "", rows)
+        if block is not None:
+            return block
+    if name.startswith(("eDP", "LVDS", "DSI")):
+        return 0
+    return None
+
+
+def global_id(slot: int, block: int) -> int:
+    return block * SLOTS + slot
+
+
+def id_for_connector(slot: str, connector: str, rows: list[dict] | None = None) -> str:
+    """Slot on a live connector -> Hyprland workspace id. Unknown stays literal."""
+    try:
+        n = int(str(slot).strip())
+    except (TypeError, ValueError):
+        return str(slot or "")
+    if n < 1 or n > MAX_ID:
+        return str(slot)
+    if n > SLOTS:
+        return str(n)
+    block = block_for_connector(connector, rows)
+    if block is None:
+        return str(n)
+    hid = global_id(n, block)
+    if hid < 1 or hid > MAX_ID:
+        return str(n)
+    return str(hid)
+
+
+def id_for_profile_slot(cfg: dict, profile: dict, slot: str, rows: list[dict] | None = None) -> str:
+    """Pinned slot -> Hyprland id, from the saved monitor's make/model/serial."""
+    try:
+        n = int(str(slot).strip())
+    except (TypeError, ValueError):
+        return str(slot or "")
+    if n < 1 or n > SLOTS:
+        return str(slot)
+    pins = profile.get("workspaceMonitors") or {}
+    mid = pins.get(str(n))
+    if mid is None:
+        mid = pins.get(n)
+    if not mid:
+        return str(n)
+    saved = next((m for m in (cfg.get("monitors") or []) if m.get("id") == mid), None)
+    if not isinstance(saved, dict):
+        return str(n)
+    rows = load_rows() if rows is None else rows
+    block = block_for_identity(
+        str(saved.get("description") or ""),
+        str(saved.get("name") or ""),
+        rows,
+    )
+    if block is None:
+        return str(n)
+    hid = global_id(n, block)
+    if hid < 1 or hid > MAX_ID:
+        return str(n)
+    return str(hid)
+
+
+def translate_profile(cfg: dict, profile: dict, rows: list[dict] | None = None) -> dict:
+    """Copy a profile whose workspace keys are Hyprland ids for this layout."""
+    import copy
+
+    profile = copy.deepcopy(profile)
+    rows = load_rows() if rows is None else rows
+    pins = profile.get("workspaceMonitors") or {}
+    mapping: dict[str, str] = {}
+    for slot in list(pins):
+        mapping[str(slot)] = id_for_profile_slot(cfg, profile, str(slot), rows)
+
+    def map_ws(ws) -> str:
+        return mapping.get(str(ws), str(ws))
+
+    for assignment in profile.get("assignments") or []:
+        if isinstance(assignment, dict) and assignment.get("workspace") is not None:
+            assignment["workspace"] = map_ws(assignment.get("workspace"))
+    prefs = profile.get("workspacePrefs") or {}
+    if isinstance(prefs, dict):
+        profile["workspacePrefs"] = {map_ws(key): value for key, value in prefs.items()}
+    profile["workspaceMonitors"] = {map_ws(key): value for key, value in pins.items()}
+    overflow = profile.get("overflow")
+    if isinstance(overflow, dict) and isinstance(overflow.get("workspaces"), list):
+        overflow["workspaces"] = [map_ws(item) if str(item) in mapping else item for item in overflow["workspaces"]]
+    return profile
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Map a WorkScape slot to an Omarchy 4.5 workspace id")
+    parser.add_argument("command", choices=["id"])
+    parser.add_argument("--slot", required=True)
+    parser.add_argument("--monitor", default="")
+    parser.add_argument("--config", default="")
+    parser.add_argument("--profile-id", default="")
+    args = parser.parse_args()
+    if args.config and args.profile_id:
+        cfg = json.loads(Path(args.config).read_text(encoding="utf-8"))
+        profile = next((p for p in (cfg.get("profiles") or []) if p.get("id") == args.profile_id), None)
+        if not isinstance(profile, dict):
+            print(args.slot)
+            return 0
+        print(id_for_profile_slot(cfg, profile, args.slot))
+        return 0
+    print(id_for_connector(args.slot, args.monitor))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

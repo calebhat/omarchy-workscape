@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 SAFE = SourceFileLoader("workscape_hyprsafe", str(Path(__file__).resolve().parent / "hyprsafe")).load_module()
+BLOCKS = SourceFileLoader("workscape_blocks", str(Path(__file__).resolve().parent / "blocks")).load_module()
 
 
 _json_cache: dict[str, Any] = {}
@@ -483,6 +484,7 @@ def pin_workspace_silent(ws: str, monitor: str, layout: str = "") -> None:
     mon = SAFE.safe_connector(monitor)
     if not ws or not mon:
         return
+    ws = SAFE.safe_ws(BLOCKS.id_for_connector(ws, mon)) or ws
     layout = layout if layout in ("dwindle", "scrolling", "master") else ""
     extra = f', layout = "{layout}"' if layout else ""
     hypr_eval(
@@ -2274,6 +2276,14 @@ def apply_config(config_path: str, profile_id: str = "", remap: str = "") -> dic
                 profiles[i] = profile
                 break
         cfg["profiles"] = profiles
+    # Slots stay in the saved profile. Geometry talks to Hyprland in block ids.
+    profile = BLOCKS.translate_profile(cfg, profile)
+    profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), list) else []
+    for i, p in enumerate(profiles):
+        if isinstance(p, dict) and p.get("id") == profile.get("id"):
+            profiles[i] = profile
+            break
+    cfg["profiles"] = profiles
     cache_clear()
     clients = hypr_j("clients")
     prefs = profile.get("workspacePrefs") or {}
